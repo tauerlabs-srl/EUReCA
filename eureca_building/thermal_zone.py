@@ -460,6 +460,8 @@ class ThermalZone(object):
                 f"Thermal zone {self.name}, air_handling_unit must be a AirHandlingUnit object"
             )
         self._air_handling_unit = value
+        # OPT-P: cache isinstance result — avoids 9960 isinstance calls per simulate
+        self._ahu_is_standard = isinstance(value, AirHandlingUnit)
 
         # mechanical_ventilation_air_flow_rate = np.zeros(CONFIG.number_of_time_steps_year)
         # mechanical_ventilation_vapour_flow_rate = np.zeros(CONFIG.number_of_time_steps_year)
@@ -731,6 +733,8 @@ Thermal zone {self.name} 1C params:
         self.UA_tot = sum(HAW_v) + sum(HAF_v)
         self.Htr_op = sum(HAW_v)
         self.Htr_w = sum(HAF_v)
+        # OPT-P: precompute Aaw/Araum ratio — used every timestep in solve_timestep
+        self._Aaw_frac = self.Aaw_tot / self.Araum_tot
 
         # OPT-F: preallocate Y (6×6) and q (6,) once — reused across all calls
         # to sensible_balance_2C, avoiding np.zeros allocation on every timestep.
@@ -739,18 +743,16 @@ Thermal zone {self.name} 1C params:
         # OPT-H2: preallocate phi_load and H_ve lists — reused every timestep
         self._phi_load_buf = [0.0, 0.0, 0.0]
         self._H_ve_buf     = [0.0, 0.0]
-        # OPT-I: initialise matrix-inverse caches here (once per build) so that
-        # sensible_balance_2C never needs hasattr() in the 64k-call hot loop.
+        # OPT-I: initialise matrix-inverse caches here (once per build)
         self._inv_Y_tset_cache   = {}
         self._inv_Y_phiset_cache = {}
-        # OPT-M: cache direct numpy array references for setpoint/humidity schedules.
-        # Binding them here (once per build) avoids 4×3=12 @property calls per
-        # solve_timestep() invocation (9960 ts × 12 = 119k property calls/simulate).
-        # Populated after add_temperature_setpoint/add_humidity_setpoint are called.
+        # OPT-M: cache schedule array refs (populated by add_*_setpoint)
         self._arr_T_set_heat = None
         self._arr_T_set_cool = None
         self._arr_RH_H       = None
         self._arr_RH_C       = None
+        # OPT-P: preallocate Tm0 list — avoids 9960 list allocs per simulate
+        self.Tm0 = [0.0, 0.0]
 
     def print_VDI6007_params(self):
         """Just a beuty print of VDI6007 parameters
@@ -1649,20 +1651,21 @@ Thermal zone {self.name} 2C params:
         #     T_sup = self.air_handling_unit.T_sup
         #     x_sup = self.air_handling_unit.x_sup
         # else:
-        if isinstance(_ahu, AirHandlingUnit):
-            # UPDATE of dynamic variables
-            _ahu.supply_temperature.schedule[t] = T_sup
-            _ahu.supply_specific_humidity.schedule[t] = x_sup
+        # OPT-P: cached bool + direct array write — avoids isinstance + .schedule getter
+        if self._ahu_is_standard:
+            _ahu._t_sup_arr[t] = T_sup
+            _ahu._x_sup_arr[t] = x_sup
 
         heat_flow = pot
         air_temp = Ta
-        _Aaw_frac = self.Aaw_tot / self.Araum_tot
+        _Aaw_frac = self._Aaw_frac  # OPT-P: precomputed constant
+        _tm0 = self.Tm0             # OPT-P: reuse preallocated list
         if model == '1C':
-            self.Tm0 = [Tm, Tm]  # For 1C only 1 Tm
+            _tm0[0] = Tm; _tm0[1] = Tm   # OPT-P: in-place update, no list alloc
             operative_temp = (Ts + Ta) * 0.5
             mean_radiant_temp = Ts
         elif model == '2C':
-            self.Tm0 = [Tm_aw, Tm_iw]
+            _tm0[0] = Tm_aw; _tm0[1] = Tm_iw  # OPT-P: in-place update
             _mr = Ts_aw * _Aaw_frac + Ts_iw * (1.0 - _Aaw_frac)
             operative_temp = (_mr + Ta) * 0.5
             mean_radiant_temp = _mr
