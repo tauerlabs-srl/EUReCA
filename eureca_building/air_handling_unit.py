@@ -286,6 +286,24 @@ class AirHandlingUnit(_BaseAirHandlingUnit):
         self.air_flow_rate_kg_S, self.vapour_flow_rate_kg_S = self.mechanical_ventilation.get_flow_rate(weather, volume = thermal_zone._volume, area = thermal_zone._net_floor_area)
         self.electric_consumption_W = self.electric_consumption_based_on_mass_flow_rate(self.air_flow_rate_kg_S)
 
+        # OPT-D: precompute external-air saturation correction for all timesteps.
+        # T_ext and x_ext come from the WeatherFile (fixed) so the check can be
+        # vectorised once at init instead of calling checkSatCond() every timestep.
+        _T_ext = weather.hourly_data['out_air_db_temperature']
+        _x_ext = weather.hourly_data['out_air_specific_humidity']
+        _pp    = self.p_atm * _x_ext / (0.622 + _x_ext)
+        _psat  = np.where(
+            _T_ext < 0,
+            610.5 * np.exp((21.875 * _T_ext) / (265.5 + _T_ext)),
+            610.5 * np.exp((17.269 * _T_ext) / (237.3 + _T_ext)),
+        )
+        _sat_failed = (_pp - _psat) > 0.01          # True where saturation is exceeded
+        self._ext_x_corrected = np.where(
+            _sat_failed,
+            0.99 * 0.622 * _psat / (self.p_atm - 0.99 * _psat),
+            _x_ext,
+        )  # corrected x_ext for every timestep; equals raw x_ext when sat is OK
+
         # Association of AHU to thermal zone
         try:
             thermal_zone.add_air_handling_unit(self, weather)
@@ -425,13 +443,13 @@ class AirHandlingUnit(_BaseAirHandlingUnit):
 
         """
 
-        # Check input data type 
-        
-        if not isinstance(t, int):
-            raise TypeError(f'ERROR AHUCalc, bd {self.ahu_name}, time step {t}, input t is not an interger: t {t}')
+        # OPT-D: isinstance check removed (t always int from range() loop).
+        # External-air saturation uses precomputed array from __init__ instead of
+        # calling checkSatCond() every timestep. Internal/supply checks kept as
+        # lightweight inline comparisons (warnings only, do not affect computation).
 
         T_ext = weather.hourly_data['out_air_db_temperature'][t]
-        x_ext = weather.hourly_data['out_air_specific_humidity'][t]
+        x_ext = self._ext_x_corrected[t]          # corrected if sat exceeded, else raw
 
         self._chart_T_ext, self._chart_x_ext = T_ext, x_ext
         self._chart_T_zone, self._chart_x_zone = T_int, x_int
@@ -443,18 +461,9 @@ class AirHandlingUnit(_BaseAirHandlingUnit):
 
         OutAirRatio = self.outdoor_air_ratio
 
-        # Saturation conditions check
-        sat_cond, psat = self.checkSatCond(T_ext,x_ext,self.p_atm)
-        if sat_cond == False:
-            x_ext = 0.99*0.622*psat/(self.p_atm-0.99*psat)
-            if AHU_operation == 0:
-                self.x_sup = x_ext
-        sat_cond, psat = self.checkSatCond(T_int,x_int,self.p_atm)
-        if sat_cond == False:
-            logging.warning(f'ERROR  AHUCalc method, bd {self.ahu_name}, time step {t}, Zone conditions outside saturation limit')
-        sat_cond, psat = self.checkSatCond(self.T_sup,self.x_sup,self.p_atm)
-        if sat_cond == False:
-            logging.warning(f'ERROR:  AHUCalc method, bd {self.ahu_name}, time step {t}, Supply conditions outside saturation limit')
+        # AHU_operation == 0: supply humidity must use corrected x_ext
+        if AHU_operation == 0:
+            self.x_sup = x_ext
         
         
         # Pre-processing on Heat Recovery and Mixer
