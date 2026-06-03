@@ -1382,11 +1382,23 @@ Thermal zone {self.name} 2C params:
 
         flag_AHU = True
 
-        # Weather data
-        T_ext = weather.hourly_data['out_air_db_temperature'][t]
-        x_ext = weather.hourly_data['out_air_specific_humidity'][t]
-        p_atm = weather.hourly_data['out_air_pressure'][t]
+        # OPT-E: bind attribute chains to local variables — LOAD_FAST is ~3x
+        # faster than LOAD_ATTR in CPython; cumulative gain over 9960 calls/simulate.
+        _hourly      = weather.hourly_data
+        _ahu         = self.air_handling_unit
+        _air_cp      = air_properties['specific_heat']
+        _air_rho     = air_properties['density']
+        _nv_af       = self.nat_vent_info['airflow_rate']
+        _ts_start    = CONFIG.start_time_step
+        _t_set_heat  = self._temperature_setpoint.schedule_lower.schedule
+        _t_set_cool  = self._temperature_setpoint.schedule_upper.schedule
+        _rh_set_H    = self._humidity_setpoint.schedule_lower.schedule
+        _rh_set_C    = self._humidity_setpoint.schedule_upper.schedule
 
+        # Weather data
+        T_ext = _hourly['out_air_db_temperature'][t]
+        x_ext = _hourly['out_air_specific_humidity'][t]
+        p_atm = _hourly['out_air_pressure'][t]
 
         # Internal Loads
         G_IHG_vapour = self.latent_load[t]  # kg_vap/s
@@ -1397,48 +1409,33 @@ Thermal zone {self.name} 2C params:
             phi_load = [self.Q_il_kon_I[t], self.Q_il_str_aw[t], self.Q_il_str_iw[t]]
 
         # Natural Ventilation
-        # nat_vent_mass_flow = self.natural_ventilation.get_timestep_ventilation_mass_flow(t, self.zone_air_temperature, weather)
-        # nv_outcomes = self.natural_ventilation.get_timestep_ventilation_mass_flow(t, self.zone_air_temperature, weather)
-        # nat_vent_vol_flow = nv_outcomes[2]  #m3/s
         nat_vent_vol_flow = 0 if self.natural_ventilation is None else self.natural_ventilation.get_timestep_ventilation_mass_flow(t, self.zone_air_temperature, weather)
-        nat_vent_mass_flow = nat_vent_vol_flow * air_properties['density']  # [kg/s]
-        self.nat_vent_air_flow_rate[t] = nat_vent_mass_flow  # [kg/s]
-        # self.nat_vent_info = {
-        #     "airflow_rate" : {'kg/s' : np.zeros([CONFIG.number_of_time_steps]),
-        #                       'm3/s' : np.zeros([CONFIG.number_of_time_steps]),
-        #                       'L/s' : np.zeros([CONFIG.number_of_time_steps]),
-        #                       'vol/h' : np.zeros([CONFIG.number_of_time_steps]),
-        #                       },
-        #     "windows_opening" : {'open_fraction' : np.zeros([CONFIG.number_of_time_steps]),
-        #                          'open_area' : np.zeros([CONFIG.number_of_time_steps]),
-        #                          },
-        #     }
+        nat_vent_mass_flow = nat_vent_vol_flow * _air_rho
+        self.nat_vent_air_flow_rate[t] = nat_vent_mass_flow
 
-        self.nat_vent_info['airflow_rate']['kg/s'][t-CONFIG.start_time_step] = nat_vent_mass_flow
-        self.nat_vent_info['airflow_rate']['m3/s'][t-CONFIG.start_time_step] = nat_vent_vol_flow
-        self.nat_vent_info['airflow_rate']['L/s'][t-CONFIG.start_time_step] = nat_vent_vol_flow/1000
-        self.nat_vent_info['airflow_rate']['m3/h'][t-CONFIG.start_time_step] = nat_vent_vol_flow*3600
-        self.nat_vent_info['airflow_rate']['vol/h'][t-CONFIG.start_time_step] = nat_vent_vol_flow/self._volume*3600
-        G_OA_nat_vent = self.infiltration_air_flow_rate[t] + nat_vent_mass_flow # kg/s outdoor air
-        H_ve_nat_vent = G_OA_nat_vent * air_properties['specific_heat']  # W/K
+        _t_idx = t - _ts_start
+        _nv_af['kg/s'][_t_idx]  = nat_vent_mass_flow
+        _nv_af['m3/s'][_t_idx]  = nat_vent_vol_flow
+        _nv_af['L/s'][_t_idx]   = nat_vent_vol_flow * 0.001
+        _nv_af['m3/h'][_t_idx]  = nat_vent_vol_flow * 3600
+        _nv_af['vol/h'][_t_idx] = nat_vent_vol_flow / self._volume * 3600
+        G_OA_nat_vent = self.infiltration_air_flow_rate[t] + nat_vent_mass_flow
+        H_ve_nat_vent = G_OA_nat_vent * _air_cp
 
-        # Ventilation
-        # TODO: Air handler to more zone?
         # Air Handling Unit
-        self.air_handling_unit.air_handling_unit_calc(t, weather, self.zone_air_temperature, self.zone_air_spec_humidity)
-        T_sup = self.air_handling_unit.T_sup
-        x_sup = self.air_handling_unit.x_sup
-        # for now the whole ahu flow rate to zone
-        G_OA_mec_vent = self.air_handling_unit.air_flow_rate_kg_S[t] # kg/s supply air
-        H_ve_mec_vent = G_OA_mec_vent * air_properties['specific_heat']  # W/K
+        _ahu.air_handling_unit_calc(t, weather, self.zone_air_temperature, self.zone_air_spec_humidity)
+        T_sup         = _ahu.T_sup
+        x_sup         = _ahu.x_sup
+        G_OA_mec_vent = _ahu.air_flow_rate_kg_S[t]
+        H_ve_mec_vent = G_OA_mec_vent * _air_cp
 
         H_ve = [H_ve_mec_vent, H_ve_nat_vent]
 
         # Set points
-        T_set_heat = self._temperature_setpoint.schedule_lower.schedule[t]
-        T_set_cool = self._temperature_setpoint.schedule_upper.schedule[t]
-        RH_set_int_H = self._humidity_setpoint.schedule_lower.schedule[t]
-        RH_set_int_C = self._humidity_setpoint.schedule_upper.schedule[t]
+        T_set_heat   = _t_set_heat[t]
+        T_set_cool   = _t_set_cool[t]
+        RH_set_int_H = _rh_set_H[t]
+        RH_set_int_C = _rh_set_C[t]
 
         # Definition if the zone terminal is on or off for heating and cooling
         zone_equipment_heating_mode = True
@@ -1608,21 +1605,23 @@ Thermal zone {self.name} 2C params:
         #     T_sup = self.air_handling_unit.T_sup
         #     x_sup = self.air_handling_unit.x_sup
         # else:
-        if isinstance(self.air_handling_unit, AirHandlingUnit):
+        if isinstance(_ahu, AirHandlingUnit):
             # UPDATE of dynamic variables
-            self.air_handling_unit.supply_temperature.schedule[t] = T_sup
-            self.air_handling_unit.supply_specific_humidity.schedule[t] = x_sup
+            _ahu.supply_temperature.schedule[t] = T_sup
+            _ahu.supply_specific_humidity.schedule[t] = x_sup
 
         heat_flow = pot
         air_temp = Ta
+        _Aaw_frac = self.Aaw_tot / self.Araum_tot
         if model == '1C':
             self.Tm0 = [Tm, Tm]  # For 1C only 1 Tm
-            operative_temp = (Ts + Ta)/2
+            operative_temp = (Ts + Ta) * 0.5
             mean_radiant_temp = Ts
         elif model == '2C':
             self.Tm0 = [Tm_aw, Tm_iw]
-            operative_temp = ((Ts_aw * self.Aaw_tot/self.Araum_tot + Ts_iw * ( 1- self.Aaw_tot/self.Araum_tot)) + Ta)/2
-            mean_radiant_temp = (Ts_aw * self.Aaw_tot/self.Araum_tot + Ts_iw * ( 1- self.Aaw_tot/self.Araum_tot))
+            _mr = Ts_aw * _Aaw_frac + Ts_iw * (1.0 - _Aaw_frac)
+            operative_temp = (_mr + Ta) * 0.5
+            mean_radiant_temp = _mr
         self.Ta0 = Ta
         self.xm0 = x_int
 
@@ -1634,9 +1633,9 @@ Thermal zone {self.name} 2C params:
         self.sensible_zone_load = pot
         self.latent_zone_load = lat_heat_flow
 
-        self.sensible_AHU_load = self.air_handling_unit.AHU_demand_sens
-        self.latent_AHU_load = self.air_handling_unit.AHU_demand_lat
-        self.AHU_electric_consumption = self.air_handling_unit.electric_consumption_W[t]
+        self.sensible_AHU_load = _ahu.AHU_demand_sens
+        self.latent_AHU_load = _ahu.AHU_demand_lat
+        self.AHU_electric_consumption = _ahu.electric_consumption_W[t]
 
         self.zone_air_temperature = air_temp
         self.zone_operative_temperature = operative_temp
