@@ -342,45 +342,101 @@ Please run thermal zones design_sensible_cooling_load and design_heating_load
         results['TZ DHW volume flow rate [L/s]'] = 1000 * np.array([tz.domestic_hot_water_volume_flow_rate for tz in self._thermal_zones_list]).T[CONFIG.start_time_step:CONFIG.final_time_step]
         results['TZ DHW demand [kW]'] = np.array([tz.domestic_hot_water_demand for tz in self._thermal_zones_list]).T[CONFIG.start_time_step:CONFIG.final_time_step]/1000
 
-        for t in range(t_start - preprocessing_ts, t_stop):
-            # print(range(t_start - preprocessing_ts, t_stop))
-            self.solve_timestep(t, weather_object)
+        # OPT-C: hoist dict lookups and HVAC/zone references outside the loop.
+        # For the common single-zone case, replace list comprehensions with direct
+        # scalar assignment — eliminates ~149k list objects per simulate() call.
+        _r_ta       = results['TZ Ta [°C]']
+        _r_to       = results['TZ To [°C]']
+        _r_tmr      = results['TZ Tmr [°C]']
+        _r_rh       = results['TZ RH [-]']
+        _r_sens     = results['TZ sensible load [kW]']
+        _r_lat      = results['TZ latent load [kW]']
+        _r_ahu_pre  = results['TZ AHU pre heater load [kW]']
+        _r_ahu_post = results['TZ AHU post heater load [kW]']
+        _r_ahu_elec = results['TZ AHU electric load [kW]']
+        _r_dhw_mode = results['DHW tank charging mode [-]']
+        _r_dhw_perc = results['DHW tank charge [-]']
+        _r_dhw_kwh  = results['DHW tank charge [kWh]']
+        _r_nonren   = results['Non-Renewable DHW [kWh]']
+        _r_solar    = results['Solar Thermal Production [kWh]']
+        _r_gas      = results['Heating system gas consumption [Sm3]']
+        _r_oil      = results['Heating system oil consumption [L]']
+        _r_gasoline = results['Heating system gasoline consumption [L]']
+        _r_lpg      = results['Heating system LPG consumption [kg]']
+        _r_coal     = results['Heating system coal consumption [kg]']
+        _r_wood     = results['Heating system wood consumption [kg]']
+        _r_pellet   = results['Heating system pellet consumption [kg]']
+        _r_dh       = results['Heating system DH consumption [kWh]']
+        _r_elec_h   = results['Heating system electric consumption [kWh]']
+        _r_elec_c   = results['Cooling system electric consumption [kWh]']
+        _r_ahu_e2   = results['AHU electric consumption [kWh]']
+        _hs         = self.heating_system
+        _cs         = self.cooling_system
+        _has_solar  = hasattr(_hs, 'solar_gain_out')
+        _inv_ts     = 1.0 / CONFIG.ts_per_hour
+        _single_zone = len(self._thermal_zones_list) == 1
 
-                 
-            results['TZ Ta [°C]'][t - t_start,:] = [tz.zone_air_temperature for tz in self._thermal_zones_list]
-            results['TZ To [°C]'][t - t_start,:] = [tz.zone_operative_temperature for tz in self._thermal_zones_list]
-            results['TZ Tmr [°C]'][t - t_start,:] = [tz.zone_mean_radiant_temperature for tz in self._thermal_zones_list]
-            results['TZ RH [-]'][t - t_start,:] = [tz.zone_air_rel_humidity for tz in self._thermal_zones_list]
-
-            results['TZ sensible load [kW]'][t - t_start, :] = [tz.sensible_zone_load/1000 for tz in self._thermal_zones_list]
-            results['TZ latent load [kW]'][t - t_start, :] = [tz.latent_zone_load/1000 for tz in self._thermal_zones_list]
-
-            results['TZ AHU pre heater load [kW]'][t - t_start, :] = [tz.air_handling_unit.preh_deu_Dem/1000 for tz in self._thermal_zones_list]
-            results['TZ AHU post heater load [kW]'][t - t_start, :] = [tz.air_handling_unit.posth_Dem/1000 for tz in self._thermal_zones_list]
-            results['TZ AHU electric load [kW]'][t - t_start, :] = [tz.AHU_electric_consumption/1000 for tz in
-                                                                      self._thermal_zones_list]
-
-            results['DHW tank charging mode [-]'][t - t_start, 0] = self.heating_system.charging_mode
-            results['DHW tank charge [-]'][t - t_start, 0] = self.heating_system.dhw_tank_current_charge_perc
-            results['DHW tank charge [kWh]'][t - t_start, 0] = self.heating_system.dhw_tank_current_charge/1000
-            results['Non-Renewable DHW [kWh]'][t - t_start,0] = self.heating_system.dhw_capacity_to_tank/1000
-            try:
-                results['Solar Thermal Production [kWh]'][t - t_start,0] = self.heating_system.solar_gain_out/1000
-            except AttributeError:
-                results['Solar Thermal Production [kWh]'][t - t_start, 0] = 0
-
-
-            results['Heating system gas consumption [Sm3]'][t - t_start,0] = self.heating_system.gas_consumption/1.055
-            results['Heating system oil consumption [L]'][t - t_start,0] = self.heating_system.oil_consumption
-            results['Heating system gasoline consumption [L]'][t - t_start,0] = self.heating_system.gasoline_consumption
-            results['Heating system LPG consumption [kg]'][t - t_start,0] = self.heating_system.lpg_consumption
-            results['Heating system coal consumption [kg]'][t - t_start,0] = self.heating_system.coal_consumption
-            results['Heating system wood consumption [kg]'][t - t_start,0] = self.heating_system.wood_consumption
-            results['Heating system pellet consumption [kg]'][t - t_start,0] = self.heating_system.pellet_consumption
-            results['Heating system DH consumption [kWh]'][t - t_start,0] = self.heating_system.DH_consumption/1000
-            results['Heating system electric consumption [kWh]'][t - t_start,0] = self.heating_system.electric_consumption/1000
-            results['Cooling system electric consumption [kWh]'][t - t_start,0] = self.cooling_system.electric_consumption/1000
-            results['AHU electric consumption [kWh]'][t - t_start,0] = results['TZ AHU electric load [kW]'][t - t_start, :].sum() / CONFIG.ts_per_hour
+        if _single_zone:
+            _tz  = self._thermal_zones_list[0]
+            _ahu = _tz.air_handling_unit
+            for t in range(t_start - preprocessing_ts, t_stop):
+                self.solve_timestep(t, weather_object)
+                _i = t - t_start
+                _r_ta[_i, 0]       = _tz.zone_air_temperature
+                _r_to[_i, 0]       = _tz.zone_operative_temperature
+                _r_tmr[_i, 0]      = _tz.zone_mean_radiant_temperature
+                _r_rh[_i, 0]       = _tz.zone_air_rel_humidity
+                _r_sens[_i, 0]     = _tz.sensible_zone_load * 0.001
+                _r_lat[_i, 0]      = _tz.latent_zone_load * 0.001
+                _r_ahu_pre[_i, 0]  = _ahu.preh_deu_Dem * 0.001
+                _r_ahu_post[_i, 0] = _ahu.posth_Dem * 0.001
+                _ahu_e             = _tz.AHU_electric_consumption * 0.001
+                _r_ahu_elec[_i, 0] = _ahu_e
+                _r_dhw_mode[_i, 0] = _hs.charging_mode
+                _r_dhw_perc[_i, 0] = _hs.dhw_tank_current_charge_perc
+                _r_dhw_kwh[_i, 0]  = _hs.dhw_tank_current_charge * 0.001
+                _r_nonren[_i, 0]   = _hs.dhw_capacity_to_tank * 0.001
+                _r_solar[_i, 0]    = _hs.solar_gain_out * 0.001 if _has_solar else 0
+                _r_gas[_i, 0]      = _hs.gas_consumption / 1.055
+                _r_oil[_i, 0]      = _hs.oil_consumption
+                _r_gasoline[_i, 0] = _hs.gasoline_consumption
+                _r_lpg[_i, 0]      = _hs.lpg_consumption
+                _r_coal[_i, 0]     = _hs.coal_consumption
+                _r_wood[_i, 0]     = _hs.wood_consumption
+                _r_pellet[_i, 0]   = _hs.pellet_consumption
+                _r_dh[_i, 0]       = _hs.DH_consumption * 0.001
+                _r_elec_h[_i, 0]   = _hs.electric_consumption * 0.001
+                _r_elec_c[_i, 0]   = _cs.electric_consumption * 0.001
+                _r_ahu_e2[_i, 0]   = _ahu_e * _inv_ts
+        else:
+            for t in range(t_start - preprocessing_ts, t_stop):
+                self.solve_timestep(t, weather_object)
+                _i = t - t_start
+                _r_ta[_i, :]       = [tz.zone_air_temperature for tz in self._thermal_zones_list]
+                _r_to[_i, :]       = [tz.zone_operative_temperature for tz in self._thermal_zones_list]
+                _r_tmr[_i, :]      = [tz.zone_mean_radiant_temperature for tz in self._thermal_zones_list]
+                _r_rh[_i, :]       = [tz.zone_air_rel_humidity for tz in self._thermal_zones_list]
+                _r_sens[_i, :]     = [tz.sensible_zone_load * 0.001 for tz in self._thermal_zones_list]
+                _r_lat[_i, :]      = [tz.latent_zone_load * 0.001 for tz in self._thermal_zones_list]
+                _r_ahu_pre[_i, :]  = [tz.air_handling_unit.preh_deu_Dem * 0.001 for tz in self._thermal_zones_list]
+                _r_ahu_post[_i, :] = [tz.air_handling_unit.posth_Dem * 0.001 for tz in self._thermal_zones_list]
+                _r_ahu_elec[_i, :] = [tz.AHU_electric_consumption * 0.001 for tz in self._thermal_zones_list]
+                _r_dhw_mode[_i, 0] = _hs.charging_mode
+                _r_dhw_perc[_i, 0] = _hs.dhw_tank_current_charge_perc
+                _r_dhw_kwh[_i, 0]  = _hs.dhw_tank_current_charge * 0.001
+                _r_nonren[_i, 0]   = _hs.dhw_capacity_to_tank * 0.001
+                _r_solar[_i, 0]    = _hs.solar_gain_out * 0.001 if _has_solar else 0
+                _r_gas[_i, 0]      = _hs.gas_consumption / 1.055
+                _r_oil[_i, 0]      = _hs.oil_consumption
+                _r_gasoline[_i, 0] = _hs.gasoline_consumption
+                _r_lpg[_i, 0]      = _hs.lpg_consumption
+                _r_coal[_i, 0]     = _hs.coal_consumption
+                _r_wood[_i, 0]     = _hs.wood_consumption
+                _r_pellet[_i, 0]   = _hs.pellet_consumption
+                _r_dh[_i, 0]       = _hs.DH_consumption * 0.001
+                _r_elec_h[_i, 0]   = _hs.electric_consumption * 0.001
+                _r_elec_c[_i, 0]   = _cs.electric_consumption * 0.001
+                _r_ahu_e2[_i, 0]   = _r_ahu_elec[_i, :].sum() * _inv_ts
 
         # results[ 'Solar Thermal PRoduction [Wh]'] = np.array(self.heating_system.solar_gain)
         # print((np.max(results['Solar Thermal Production [Wh]'])))
