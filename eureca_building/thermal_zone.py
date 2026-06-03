@@ -718,6 +718,11 @@ Thermal zone {self.name} 1C params:
         self.Htr_op = sum(HAW_v)
         self.Htr_w = sum(HAF_v)
 
+        # OPT-F: preallocate Y (6×6) and q (6,) once — reused across all calls
+        # to sensible_balance_2C, avoiding np.zeros allocation on every timestep.
+        self._Y_buf = np.zeros([6, 6])
+        self._q_buf = np.zeros(6)
+
     def print_VDI6007_params(self):
         """Just a beuty print of VDI6007 parameters
 
@@ -1167,7 +1172,7 @@ Thermal zone {self.name} 2C params:
             if not hasattr(self, '_inv_Y_tset_cache'):
                 self._inv_Y_tset_cache = {}
             if sigma_key not in self._inv_Y_tset_cache:
-                Y = np.zeros([6, 6])
+                Y = self._Y_buf; Y[:] = 0.0  # OPT-F: reuse preallocated buffer
                 Y[0, 0] = -1 / self.RrestAW - 1 / self.R1AW - self.C1AW / tau
                 Y[0, 1] = 1 / self.R1AW
                 Y[1, 0] = 1 / self.R1AW
@@ -1188,9 +1193,9 @@ Thermal zone {self.name} 2C params:
                 self._inv_Y_tset_cache[sigma_key] = np.linalg.inv(Y)
             inv_Y = self._inv_Y_tset_cache[sigma_key]
 
-            # VECTOR OF KNOWN VALUES
+            # VECTOR OF KNOWN VALUES (OPT-F: reuse preallocated buffer)
 
-            q = np.zeros(6)
+            q = self._q_buf
 
             q[0] = -theta_A_eq / self.RrestAW - self.C1AW * self.Tm0[0] / tau
             q[1] = -Q_il_str_aw
@@ -1245,10 +1250,10 @@ Thermal zone {self.name} 2C params:
 
             # VECTOR OF KNOWN TERMS (rebuilt every timestep — depends on weather + state)
 
-            q = np.zeros(6)
+            q = self._q_buf  # OPT-F: reuse preallocated buffer
             q[0] = -theta_A_eq / self.RrestAW - self.C1AW * self.Tm0[0] / tau
             q[1] = -Q_hk_aw - Q_il_str_aw
-            q[2] = 0
+            q[2] = 0.0
             q[3] = -Q_hk_kon - Q_il_kon - theta_lue / R_lue_inf - theta_sup / R_lue_ve - self._air_thermal_capacity * self.Ta0 / tau
             q[4] = -Q_hk_iw - Q_il_str_iw
             q[5] = -self.C1IW * self.Tm0[1] / tau
