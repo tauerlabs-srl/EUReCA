@@ -220,8 +220,36 @@ Please run thermal zones design_sensible_cooling_load and design_heating_load
         weather_object : eureca_building.weather.WeatherFile
             WeatherFile object to use to simulate
         """
+        # OPT-O: single-zone fast path — bypasses _thermal_zones_list @property
+        # (149k calls/simulate) and tz.air_handling_unit @property (199k calls).
+        # For N=1 zones no sum+divide needed; air_t/air_rh read directly.
+        # Latent load added twice — preserves original behaviour (bug in upstream).
+        _tzl = self.__thermal_zones_list
+        if len(_tzl) == 1:
+            _tz  = _tzl[0]
+            _tz.solve_timestep(t, weather, model=self._model)
+            _sl  = _tz.sensible_zone_load
+            _ll  = _tz.latent_zone_load
+            _ahu = _tz._air_handling_unit   # direct access, bypass @property
+            _preh = _ahu.preh_deu_Dem
+            if _sl > 0.:
+                heat_load = _sl;  cool_load = 0.
+            else:
+                heat_load = 0.;   cool_load = _sl
+            if _preh > 0.:  heat_load += _preh
+            else:           cool_load += _preh
+            heat_load += _ahu.posth_Dem
+            if _ll > 0.:  heat_load += _ll + _ll   # added twice (original)
+            else:         cool_load += _ll + _ll
+            _air_t  = _tz.zone_air_temperature
+            _air_rh = _tz.zone_air_rel_humidity
+            self.heating_system.solve_system(heat_load, _tz.domestic_hot_water_demand[t], weather, t, _air_t, _air_rh)
+            self.cooling_system.solve_system(cool_load, weather, t, _air_t, _air_rh)
+            return
+
+        # Multi-zone: original path
         heat_load, dhw_load, cool_load, air_t, air_rh = 0., 0., 0., 0., 0.
-        for tz in self._thermal_zones_list:
+        for tz in _tzl:
             tz.solve_timestep(t, weather, model = self._model)
             air_t += tz.zone_air_temperature
             air_rh += tz.zone_air_rel_humidity
@@ -236,7 +264,6 @@ Please run thermal zones design_sensible_cooling_load and design_heating_load
                 cool_load += tz.air_handling_unit.preh_deu_Dem
             heat_load += tz.air_handling_unit.posth_Dem
 
-            # For the moment not latent
             if tz.latent_zone_load > 0.:
                 heat_load += tz.latent_zone_load
             else:
@@ -247,11 +274,10 @@ Please run thermal zones design_sensible_cooling_load and design_heating_load
             else:
                 cool_load += tz.latent_zone_load
 
-            # DHW
             dhw_load += tz.domestic_hot_water_demand[t]
 
-        air_t /= len(self._thermal_zones_list)
-        air_rh /= len(self._thermal_zones_list)
+        _n = len(_tzl)
+        air_t /= _n;  air_rh /= _n
         self.heating_system.solve_system(heat_load, dhw_load, weather, t, air_t, air_rh)
         self.cooling_system.solve_system(cool_load, weather, t, air_t, air_rh)
 
