@@ -207,6 +207,10 @@ class ThermalZone(object):
         """
         self.temperature_setpoint = setpoint
         self.temperature_setpoint_mode = mode
+        # OPT-M: cache direct numpy array references — bypasses 2 @property
+        # calls per timestep (schedule_lower → Schedule → _schedule).
+        self._arr_T_set_heat = setpoint.schedule_lower._schedule
+        self._arr_T_set_cool = setpoint.schedule_upper._schedule
 
     @property
     def temperature_setpoint(self):
@@ -248,6 +252,9 @@ class ThermalZone(object):
         self.humidity_setpoint = setpoint
         # the mode is in the SP object
         self.humidity_setpoint_mode = setpoint.setpoint_type
+        # OPT-M: cache direct numpy array references
+        self._arr_RH_H = setpoint.schedule_lower._schedule
+        self._arr_RH_C = setpoint.schedule_upper._schedule
 
     @property
     def humidity_setpoint(self):
@@ -736,6 +743,14 @@ Thermal zone {self.name} 1C params:
         # sensible_balance_2C never needs hasattr() in the 64k-call hot loop.
         self._inv_Y_tset_cache   = {}
         self._inv_Y_phiset_cache = {}
+        # OPT-M: cache direct numpy array references for setpoint/humidity schedules.
+        # Binding them here (once per build) avoids 4×3=12 @property calls per
+        # solve_timestep() invocation (9960 ts × 12 = 119k property calls/simulate).
+        # Populated after add_temperature_setpoint/add_humidity_setpoint are called.
+        self._arr_T_set_heat = None
+        self._arr_T_set_cool = None
+        self._arr_RH_H       = None
+        self._arr_RH_C       = None
 
     def print_VDI6007_params(self):
         """Just a beuty print of VDI6007 parameters
@@ -1413,10 +1428,11 @@ Thermal zone {self.name} 2C params:
         _air_rho     = air_properties['density']
         _nv_af       = self.nat_vent_info['airflow_rate']
         _ts_start    = CONFIG.start_time_step
-        _t_set_heat  = self._temperature_setpoint.schedule_lower.schedule
-        _t_set_cool  = self._temperature_setpoint.schedule_upper.schedule
-        _rh_set_H    = self._humidity_setpoint.schedule_lower.schedule
-        _rh_set_C    = self._humidity_setpoint.schedule_upper.schedule
+        # OPT-M: use cached numpy array refs — avoids 4×3 @property chain calls/ts
+        _t_set_heat  = self._arr_T_set_heat
+        _t_set_cool  = self._arr_T_set_cool
+        _rh_set_H    = self._arr_RH_H
+        _rh_set_C    = self._arr_RH_C
 
         # Weather data
         T_ext = _hourly['out_air_db_temperature'][t]
