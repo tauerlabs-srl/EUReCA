@@ -22,6 +22,11 @@ from eureca_building.fluids_properties import fuels_pci, water_properties
 from eureca_building.config import CONFIG
 from eureca_building.solar_thermal_system import SolarThermal_Collector
 
+# OPT-K: precompute inverse of ts_per_hour as module-level constant.
+# CONFIG.ts_per_hour is a @property called 300k+ times per calibration call
+# inside dhw_tank_solver and solve_system methods (per-timestep hot paths).
+_INV_TS = 1.0 / CONFIG.ts_per_hour
+
 # including Systems info from system_info json
 global systems_info_dict
 systems_info_dict = {}
@@ -189,19 +194,20 @@ class System(metaclass=abc.ABCMeta):
         #     solar_thermal_gain=0
         self.charging_mode = 0
         self.discharging_mode = 0
-        self.solar_gain_out = self.solar_gain.iloc[timestep]/CONFIG.ts_per_hour if hasattr(self,"solar_gain") else 0
+        # OPT-K: use precomputed _INV_TS instead of CONFIG.ts_per_hour property
+        self.solar_gain_out = self.solar_gain.iloc[timestep] * _INV_TS if hasattr(self,"solar_gain") else 0
         solar_gain=self.solar_gain_out
         self.tank_discharge=0
         self.dhw_capacity_to_tank=0
         loss_rate=self.losses_discharging_rate*max(1,self.dhw_tank_current_charge_perc)
-        self.storage_tank_loss=self.dhw_tank_design_charge * loss_rate/CONFIG.ts_per_hour/100
+        self.storage_tank_loss=self.dhw_tank_design_charge * loss_rate * _INV_TS * 0.01
 
-        self.dhw_tank_current_charge=self.dhw_tank_current_charge+solar_gain-dhw_demand/CONFIG.ts_per_hour
+        self.dhw_tank_current_charge=self.dhw_tank_current_charge+solar_gain-dhw_demand * _INV_TS
         self.dhw_tank_current_charge=self.dhw_tank_current_charge-self.storage_tank_loss
         self.dhw_tank_current_charge_perc = self.dhw_tank_current_charge / self.dhw_tank_design_charge *100
         if (self.dhw_tank_current_charge<self.dhw_tank_minimum_charge):
             self.charging_mode = 1
-            self.dhw_capacity_to_tank=min(self.dhw_tank_design_charge-self.dhw_tank_current_charge,self.dhw_design_load/CONFIG.ts_per_hour)
+            self.dhw_capacity_to_tank=min(self.dhw_tank_design_charge-self.dhw_tank_current_charge,self.dhw_design_load * _INV_TS)
             self.dhw_tank_current_charge=self.dhw_tank_current_charge+self.dhw_capacity_to_tank
         if (self.dhw_tank_current_charge>self.dhw_tank_maximum_charge):
             self.discharging_mode = 1
@@ -461,8 +467,8 @@ class CondensingBoiler(System):
                             1 - self.FC_Pint)  # [W]
 
         total_energy = heat_flow + self.phi_gn_i_Px
-        self.gas_consumption = total_energy / CONFIG.ts_per_hour /self.PCI_natural_gas
-        self.electric_consumption = self.W_aux_Px / CONFIG.ts_per_hour
+        self.gas_consumption = total_energy * _INV_TS /self.PCI_natural_gas
+        self.electric_consumption = self.W_aux_Px * _INV_TS
 
 # %%---------------------------------------------------------------------------------------------------
 # %% TraditionalBoiler class
@@ -638,8 +644,8 @@ class TraditionalBoiler(System):
 
 
         total_energy = heat_flow + self.phi_gn_i_Px
-        self.gas_consumption = total_energy / CONFIG.ts_per_hour /self.PCI_natural_gas
-        self.electric_consumption = self.W_aux_Px / CONFIG.ts_per_hour
+        self.gas_consumption = total_energy * _INV_TS /self.PCI_natural_gas
+        self.electric_consumption = self.W_aux_Px * _INV_TS
 
 # %%---------------------------------------------------------------------------------------------------
 # %% SplitAirCooler class
@@ -851,7 +857,7 @@ class SplitAirCooler(System):
             self.H_waste = abs(heat_flow) + self.W_el # [W]
             self.W_aux = self.W_aux_gn * (self.H_waste)  # [We]
 
-        self.electric_consumption = (self.W_el + self.W_aux) / CONFIG.ts_per_hour
+        self.electric_consumption = (self.W_el + self.W_aux) * _INV_TS
 
 
 # %%---------------------------------------------------------------------------------------------------
@@ -1036,7 +1042,7 @@ class ChillerAirtoWater(System):
             self.H_waste = abs(heat_flow) + self.W_el # [W]
             self.W_aux = self.W_aux_gn * (self.H_waste)  # [We]
 
-        self.electric_consumption = (self.W_el + self.W_aux) / CONFIG.ts_per_hour
+        self.electric_consumption = (self.W_el + self.W_aux) * _INV_TS
 
 # %%---------------------------------------------------------------------------------------------------
 # %% SplitAirConditioner class
@@ -1186,7 +1192,7 @@ class SplitAirConditioner(System):
             self.H_waste = (abs(heat_flow) * (1 + self.EER)) / self.EER
             self.W_el = self.H_waste - abs(heat_flow)
 
-        self.electric_consumption = (self.W_el) / CONFIG.ts_per_hour
+        self.electric_consumption = (self.W_el) * _INV_TS
 
 class Heating_EN15316(System):
     '''Class Heating_EN15316. This method considers a generic heating system as the heating system
@@ -1297,24 +1303,24 @@ class Heating_EN15316(System):
         total_energy = heat_flow / self.total_efficiency
 
         if "Oil" in self.generation_type:
-            self.oil_consumption = total_energy / CONFIG.ts_per_hour / fuels_pci["Oil"]
-            self.electric_consumption = self.generation_auxiliary_electric_load / CONFIG.ts_per_hour
+            self.oil_consumption = total_energy * _INV_TS / fuels_pci["Oil"]
+            self.electric_consumption = self.generation_auxiliary_electric_load * _INV_TS
         elif "Coal" in self.generation_type:
-            self.coal_consumption = total_energy / CONFIG.ts_per_hour / fuels_pci["Coal"]
-            self.electric_consumption = self.generation_auxiliary_electric_load / CONFIG.ts_per_hour
+            self.coal_consumption = total_energy * _INV_TS / fuels_pci["Coal"]
+            self.electric_consumption = self.generation_auxiliary_electric_load * _INV_TS
         elif "District Heating" in self.generation_type:
-            self.DH_consumption = total_energy / CONFIG.ts_per_hour
-            self.electric_consumption = self.generation_auxiliary_electric_load / CONFIG.ts_per_hour
+            self.DH_consumption = total_energy * _INV_TS
+            self.electric_consumption = self.generation_auxiliary_electric_load * _INV_TS
         elif "Stove" in self.generation_type:
-            self.wood_consumption = total_energy / CONFIG.ts_per_hour / fuels_pci["Wood"]
-            self.electric_consumption = self.generation_auxiliary_electric_load / CONFIG.ts_per_hour
+            self.wood_consumption = total_energy * _INV_TS / fuels_pci["Wood"]
+            self.electric_consumption = self.generation_auxiliary_electric_load * _INV_TS
         elif "Heat Pump" in self.generation_type:
-            self.electric_consumption = total_energy / CONFIG.ts_per_hour
+            self.electric_consumption = total_energy * _INV_TS
         elif "Gas" in self.generation_type:
-            self.gas_consumption = total_energy / CONFIG.ts_per_hour / fuels_pci["Natural Gas"]
-            self.electric_consumption = self.generation_auxiliary_electric_load / CONFIG.ts_per_hour
+            self.gas_consumption = total_energy * _INV_TS / fuels_pci["Natural Gas"]
+            self.electric_consumption = self.generation_auxiliary_electric_load * _INV_TS
         elif "Electric Heater" in self.generation_type:
-            self.electric_consumption = total_energy / CONFIG.ts_per_hour + self.generation_auxiliary_electric_load / CONFIG.ts_per_hour
+            self.electric_consumption = total_energy * _INV_TS + self.generation_auxiliary_electric_load * _INV_TS
 
     def solve_quasi_steady_state(self, heat_flow, dhw_flow):
         '''This method allows to calculate the system power for each time step
@@ -1439,7 +1445,7 @@ class Cooling_EN15316(System):
         # Corrected efficiency and losses at nominal power
 
         total_energy = abs(heat_flow) / self.total_efficiency
-        self.electric_consumption = total_energy / CONFIG.ts_per_hour
+        self.electric_consumption = total_energy * _INV_TS
 
     def solve_quasi_steady_state(self, heat_flow):
         '''This method allows to calculate the system power for each month
@@ -1559,7 +1565,7 @@ class HP_Staffell(System):
 
         total_energy = heat_flow / self.total_efficiency / COP_ts
 
-        self.electric_consumption = total_energy / CONFIG.ts_per_hour
+        self.electric_consumption = total_energy * _INV_TS
 
     # def solve_quasi_steady_state(self, heat_flow, dhw_flow):
     #     '''This method allows to calculate the system power for each time step
@@ -1730,42 +1736,42 @@ class HeatingFromParams(System):
         dhw_total_energy = self.dhw_capacity_to_tank / self.dhw_total_efficiency
 
         if "Oil" in self.fuel_type:
-            self.oil_consumption = total_energy / CONFIG.ts_per_hour / fuels_pci["Oil"]
+            self.oil_consumption = total_energy * _INV_TS / fuels_pci["Oil"]
         elif "Gasoline" in self.fuel_type:
-            self.gasoline_consumption = total_energy / CONFIG.ts_per_hour / fuels_pci["Gasoline"]
+            self.gasoline_consumption = total_energy * _INV_TS / fuels_pci["Gasoline"]
         elif "Coal" in self.fuel_type:
-            self.coal_consumption = total_energy / CONFIG.ts_per_hour / fuels_pci["Coal"]
+            self.coal_consumption = total_energy * _INV_TS / fuels_pci["Coal"]
         elif "LPG" in self.fuel_type:
-            self.lpg_consumption = total_energy / CONFIG.ts_per_hour / fuels_pci["LPG"]
+            self.lpg_consumption = total_energy * _INV_TS / fuels_pci["LPG"]
         elif "Natural" in self.fuel_type and "Gas" in self.fuel_type :
-            self.gas_consumption = total_energy / CONFIG.ts_per_hour / fuels_pci["Natural Gas"]
+            self.gas_consumption = total_energy * _INV_TS / fuels_pci["Natural Gas"]
         elif "Wood" in self.fuel_type:
-            self.wood_consumption = total_energy / CONFIG.ts_per_hour / fuels_pci["Wood"]
+            self.wood_consumption = total_energy * _INV_TS / fuels_pci["Wood"]
         elif "Pellet" in self.fuel_type:
-            self.pellet_consumption = total_energy / CONFIG.ts_per_hour / fuels_pci["Pellets"]
+            self.pellet_consumption = total_energy * _INV_TS / fuels_pci["Pellets"]
         elif "Electric" in self.fuel_type:
-            self.electric_consumption = total_energy / CONFIG.ts_per_hour / self.COP
+            self.electric_consumption = total_energy * _INV_TS / self.COP
         elif "DH" in self.fuel_type:
-            self.DH_consumption = total_energy / CONFIG.ts_per_hour
+            self.DH_consumption = total_energy * _INV_TS
 
         if "Oil" in self.dhw_fuel_type:
-            self.oil_consumption += dhw_total_energy / CONFIG.ts_per_hour / fuels_pci["Oil"]
+            self.oil_consumption += dhw_total_energy * _INV_TS / fuels_pci["Oil"]
         elif "Gasoline" in self.dhw_fuel_type:
-            self.gasoline_consumption += dhw_total_energy / CONFIG.ts_per_hour / fuels_pci["Gasoline"]
+            self.gasoline_consumption += dhw_total_energy * _INV_TS / fuels_pci["Gasoline"]
         elif "Coal" in self.dhw_fuel_type:
-            self.coal_consumption += dhw_total_energy / CONFIG.ts_per_hour / fuels_pci["Coal"]
+            self.coal_consumption += dhw_total_energy * _INV_TS / fuels_pci["Coal"]
         elif "LPG" in self.dhw_fuel_type:
-            self.lpg_consumption += dhw_total_energy / CONFIG.ts_per_hour / fuels_pci["LPG"]
+            self.lpg_consumption += dhw_total_energy * _INV_TS / fuels_pci["LPG"]
         elif "Natural" in self.dhw_fuel_type and "Gas" in self.dhw_fuel_type:
-            self.gas_consumption += dhw_total_energy / CONFIG.ts_per_hour / fuels_pci["Natural Gas"]
+            self.gas_consumption += dhw_total_energy * _INV_TS / fuels_pci["Natural Gas"]
         elif "Wood" in self.dhw_fuel_type:
-            self.wood_consumption += dhw_total_energy / CONFIG.ts_per_hour / fuels_pci["Wood"]
+            self.wood_consumption += dhw_total_energy * _INV_TS / fuels_pci["Wood"]
         elif "Wood" in self.dhw_fuel_type:
-            self.pellet_consumption += dhw_total_energy / CONFIG.ts_per_hour / fuels_pci["Pellets"]
+            self.pellet_consumption += dhw_total_energy * _INV_TS / fuels_pci["Pellets"]
         elif "Electric" in self.dhw_fuel_type:
-            self.electric_consumption += dhw_total_energy / CONFIG.ts_per_hour / self.dhw_COP
+            self.electric_consumption += dhw_total_energy * _INV_TS / self.dhw_COP
         elif "DH" in self.dhw_fuel_type:
-            self.DH_consumption += dhw_total_energy / CONFIG.ts_per_hour
+            self.DH_consumption += dhw_total_energy * _INV_TS
 
     def solve_quasi_steady_state(self, heat_flow, dhw_flow):
         '''This method allows to calculate the system power for each month
@@ -1808,7 +1814,7 @@ class HeatingFromParams(System):
         elif "Electric" in self.fuel_type:
             self.electric_consumption = total_energy / self.COP
         elif "DH" in self.fuel_type:
-            self.DH_consumption = total_energy / CONFIG.ts_per_hour
+            self.DH_consumption = total_energy * _INV_TS
 
         dhw_total_energy = dhw_flow / self.dhw_total_efficiency
 
@@ -1829,7 +1835,7 @@ class HeatingFromParams(System):
         elif "Electric" in self.dhw_fuel_type:
             self.electric_consumption += dhw_total_energy / self.dhw_COP
         elif "DH" in self.dhw_fuel_type:
-            self.DH_consumption += dhw_total_energy / CONFIG.ts_per_hour
+            self.DH_consumption += dhw_total_energy * _INV_TS
 
 
 class CoolingFromParams(System):
@@ -1929,9 +1935,9 @@ class CoolingFromParams(System):
         total_energy = heat_flow / self.total_efficiency
 
         if "Electric" in self.fuel_type:
-            self.electric_consumption = -1 * total_energy / CONFIG.ts_per_hour
+            self.electric_consumption = -1 * total_energy * _INV_TS
         elif "DH" in self.fuel_type:
-            self.DH_consumption = total_energy / CONFIG.ts_per_hour
+            self.DH_consumption = total_energy * _INV_TS
 
     def solve_quasi_steady_state(self, heat_flow):
         '''This method allows to calculate the system power for each month
