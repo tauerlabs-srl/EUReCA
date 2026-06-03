@@ -722,6 +722,9 @@ Thermal zone {self.name} 1C params:
         # to sensible_balance_2C, avoiding np.zeros allocation on every timestep.
         self._Y_buf = np.zeros([6, 6])
         self._q_buf = np.zeros(6)
+        # OPT-H2: preallocate phi_load and H_ve lists — reused every timestep
+        self._phi_load_buf = [0.0, 0.0, 0.0]
+        self._H_ve_buf     = [0.0, 0.0]
 
     def print_VDI6007_params(self):
         """Just a beuty print of VDI6007 parameters
@@ -1210,8 +1213,9 @@ Thermal zone {self.name} 2C params:
             # OUTPUT (UNKNOWN) VARIABLES OF THE LINEAR SYSTEM
 
             y = inv_Y.dot(q)
-            # Seems to be more computationally efficient then np.insert
-            return np.array([a for a in y[:3]] + [T_set] + [a for a in y[3:]]) # np.insert(y, 3, T_set)
+            # OPT-H1: direct numpy construction avoids list comprehensions
+            _out = np.empty(7); _out[:3] = y[:3]; _out[3] = T_set; _out[4:] = y[3:]
+            return _out
 
         elif flag == 'phiset':
             # Note: the heat load in input is already distributed on the 3 nodes
@@ -1261,8 +1265,9 @@ Thermal zone {self.name} 2C params:
             # OUTPUT LINEAR SYSTEM
 
             y = inv_Y.dot(q)
-            # Seems to be more computationally efficient then np.insert
-            return np.array([num for num in y[:4]] + [phi_HC_set] + [num for num in y[4:]]) # np.insert(y, 4, phi_HC_set)
+            # OPT-H1: direct numpy construction avoids list comprehensions
+            _out = np.empty(7); _out[:4] = y[:4]; _out[4] = phi_HC_set; _out[5:] = y[4:]
+            return _out
 
         else:
             raise ValueError(f'Energy system zone solution: flag must be "phiset" or "Tset", flag: {flag}')
@@ -1306,7 +1311,13 @@ Thermal zone {self.name} 2C params:
 
         """
 
-        x_int_set, p_intsat = self.get_specific_humidity(t_air_int, rh_int_set, p_atm)
+        # OPT-H5: inline get_specific_humidity — eliminates method call overhead
+        # (called 10870 times per simulate(); original method body preserved here)
+        if t_air_int < 0:
+            p_intsat = 610.5 * np.exp((21.875 * t_air_int) / (265.5 + t_air_int))
+        else:
+            p_intsat = 610.5 * np.exp((17.269 * t_air_int) / (237.3 + t_air_int))
+        x_int_set = 0.622 * (rh_int_set * p_intsat / (p_atm - (rh_int_set * p_intsat)))
 
         G_da_vent = G_ve[0]
         G_da_inf = G_ve[1]
@@ -1405,13 +1416,15 @@ Thermal zone {self.name} 2C params:
         x_ext = _hourly['out_air_specific_humidity'][t]
         p_atm = _hourly['out_air_pressure'][t]
 
-        # Internal Loads
+        # Internal Loads — OPT-H2: reuse preallocated phi_load buffer
         G_IHG_vapour = self.latent_load[t]  # kg_vap/s
+        _phi = self._phi_load_buf
         if model == "1C":
-            phi_load = [self.phi_ia[t], self.phi_st[t], self.phi_m[t]]
+            _phi[0] = self.phi_ia[t]; _phi[1] = self.phi_st[t]; _phi[2] = self.phi_m[t]
         else:
             T_ext_eq = self.theta_eq_tot[t]
-            phi_load = [self.Q_il_kon_I[t], self.Q_il_str_aw[t], self.Q_il_str_iw[t]]
+            _phi[0] = self.Q_il_kon_I[t]; _phi[1] = self.Q_il_str_aw[t]; _phi[2] = self.Q_il_str_iw[t]
+        phi_load = _phi
 
         # Natural Ventilation
         nat_vent_vol_flow = 0 if self.natural_ventilation is None else self.natural_ventilation.get_timestep_ventilation_mass_flow(t, self.zone_air_temperature, weather)
@@ -1434,7 +1447,10 @@ Thermal zone {self.name} 2C params:
         G_OA_mec_vent = _ahu.air_flow_rate_kg_S[t]
         H_ve_mec_vent = G_OA_mec_vent * _air_cp
 
-        H_ve = [H_ve_mec_vent, H_ve_nat_vent]
+        # OPT-H2: reuse preallocated H_ve buffer
+        _H = self._H_ve_buf
+        _H[0] = H_ve_mec_vent; _H[1] = H_ve_nat_vent
+        H_ve = _H
 
         # Set points
         T_set_heat   = _t_set_heat[t]

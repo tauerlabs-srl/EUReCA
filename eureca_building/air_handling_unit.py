@@ -304,6 +304,13 @@ class AirHandlingUnit(_BaseAirHandlingUnit):
             _x_ext,
         )  # corrected x_ext for every timestep; equals raw x_ext when sat is OK
 
+        # OPT-H3: cache direct numpy array references to bypass @property overhead.
+        # These are read-only handles to the underlying _schedule arrays; writes
+        # to schedule[t] via the Schedule setter go to the same arrays. ✓
+        self._ahu_op_arr = self._ahu_operation._schedule
+        self._t_sup_arr  = self._supply_temperature._schedule
+        self._x_sup_arr  = self._supply_specific_humidity._schedule
+
         # Association of AHU to thermal zone
         try:
             thermal_zone.add_air_handling_unit(self, weather)
@@ -443,21 +450,18 @@ class AirHandlingUnit(_BaseAirHandlingUnit):
 
         """
 
-        # OPT-D: isinstance check removed (t always int from range() loop).
-        # External-air saturation uses precomputed array from __init__ instead of
-        # calling checkSatCond() every timestep. Internal/supply checks kept as
-        # lightweight inline comparisons (warnings only, do not affect computation).
-
+        # OPT-D+H3: no isinstance check; precomputed ext sat; cached schedule arrays
         T_ext = weather.hourly_data['out_air_db_temperature'][t]
-        x_ext = self._ext_x_corrected[t]          # corrected if sat exceeded, else raw
+        x_ext = self._ext_x_corrected[t]
 
         self._chart_T_ext, self._chart_x_ext = T_ext, x_ext
         self._chart_T_zone, self._chart_x_zone = T_int, x_int
 
-        AHU_operation = self.ahu_operation.schedule[t]
-        self.T_sup = self.supply_temperature.schedule[t]
-        self.x_sup = self.supply_specific_humidity.schedule[t]
-        m_vent = self.air_flow_rate_kg_S[t]
+        # OPT-H3: direct array access — bypasses @property getter on Schedule objects
+        AHU_operation = self._ahu_op_arr[t]
+        self.T_sup    = self._t_sup_arr[t]
+        self.x_sup    = self._x_sup_arr[t]
+        m_vent        = self.air_flow_rate_kg_S[t]
 
         OutAirRatio = self.outdoor_air_ratio
 

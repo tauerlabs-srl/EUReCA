@@ -297,34 +297,38 @@ Please run thermal zones design_sensible_cooling_load and design_heating_load
         _hs = self.heating_system
         _cs = self.cooling_system
 
+        # OPT-H4: two separate loops — preprocessing (no accumulation) and main
+        # (no branch). Eliminates the `if t >= t_start` check from 9960 iterations.
         if len(self._thermal_zones_list) == 1:
             _tz0 = self._thermal_zones_list[0]
-            for t in range(_t_start - _preproc, _t_stop):
+            for t in range(_t_start - _preproc, _t_start):   # preprocessing warmup
                 self.solve_timestep(t, weather_object)
-                if t >= _t_start:
-                    _m = _months[t - _t_start] - 1
-                    _elec_m[_m] += (
-                        _hs.electric_consumption * 0.001
-                        + _cs.electric_consumption * 0.001
-                        + _tz0.AHU_electric_consumption * 0.001 * _inv_ts
-                        + _appliances_kwh[t]
-                    )
-                    _gas_m[_m] += _hs.gas_consumption / 1.055
-                    _dh_m[_m]  += _hs.DH_consumption  * 0.001
+            for t in range(_t_start, _t_stop):               # main: accumulate directly
+                self.solve_timestep(t, weather_object)
+                _m = _months[t - _t_start] - 1
+                _elec_m[_m] += (
+                    _hs.electric_consumption * 0.001
+                    + _cs.electric_consumption * 0.001
+                    + _tz0.AHU_electric_consumption * 0.001 * _inv_ts
+                    + _appliances_kwh[t]
+                )
+                _gas_m[_m] += _hs.gas_consumption / 1.055
+                _dh_m[_m]  += _hs.DH_consumption  * 0.001
         else:
-            for t in range(_t_start - _preproc, _t_stop):
+            for t in range(_t_start - _preproc, _t_start):
                 self.solve_timestep(t, weather_object)
-                if t >= _t_start:
-                    _m = _months[t - _t_start] - 1
-                    _ahu_e = sum(tz.AHU_electric_consumption for tz in self._thermal_zones_list)
-                    _elec_m[_m] += (
-                        _hs.electric_consumption * 0.001
-                        + _cs.electric_consumption * 0.001
-                        + _ahu_e * 0.001 * _inv_ts
-                        + _appliances_kwh[t]
-                    )
-                    _gas_m[_m] += _hs.gas_consumption / 1.055
-                    _dh_m[_m]  += _hs.DH_consumption  * 0.001
+            for t in range(_t_start, _t_stop):
+                self.solve_timestep(t, weather_object)
+                _m = _months[t - _t_start] - 1
+                _ahu_e = sum(tz.AHU_electric_consumption for tz in self._thermal_zones_list)
+                _elec_m[_m] += (
+                    _hs.electric_consumption * 0.001
+                    + _cs.electric_consumption * 0.001
+                    + _ahu_e * 0.001 * _inv_ts
+                    + _appliances_kwh[t]
+                )
+                _gas_m[_m] += _hs.gas_consumption / 1.055
+                _dh_m[_m]  += _hs.DH_consumption  * 0.001
 
         return {
             "AnnualCalibrationTotals": {
