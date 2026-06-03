@@ -1160,32 +1160,33 @@ Thermal zone {self.name} 2C params:
         if flag == 'Tset':
             theta_I_lu = T_set  # internal air setpoint
 
-            # MATRIX OF THERMAL TRANSMITTANCES
-
-            Y = np.zeros([6, 6])
-
-            Y[0, 0] = -1 / self.RrestAW - 1 / self.R1AW - self.C1AW / tau
-            Y[0, 1] = 1 / self.R1AW
-
-            Y[1, 0] = 1 / self.R1AW
-            Y[1, 1] = -1 / self.R1AW - 1 / self.RalphaStarAW
-            Y[1, 2] = 1 / self.RalphaStarAW
-            Y[1, 3] = sigma[1]
-
-            Y[2, 1] = 1 / self.RalphaStarAW
-            Y[2, 2] = -1 / self.RalphaStarAW - 1 / self.RalphaStarIL - 1 / self.RalphaStarIW
-            Y[2, 4] = 1 / self.RalphaStarIW
-
-            Y[3, 2] = 1 / self.RalphaStarIL
-            Y[3, 3] = sigma[2]
-
-            Y[4, 2] = 1 / self.RalphaStarIW
-            Y[4, 3] = sigma[0]
-            Y[4, 4] = -1 / self.RalphaStarIW - 1 / self.R1IW
-            Y[4, 5] = 1 / self.R1IW
-
-            Y[5, 4] = 1 / self.R1IW
-            Y[5, 5] = -1 / self.R1IW - self.C1IW / tau
+            # OPT-B: cache inv(Y_Tset) — Y depends only on RC constants + sigma (2 discrete values).
+            # On first call for a given sigma, build Y and cache its inverse.
+            # All subsequent calls skip the inversion and do only a dot product.
+            sigma_key = (sigma[0], sigma[1], sigma[2])
+            if not hasattr(self, '_inv_Y_tset_cache'):
+                self._inv_Y_tset_cache = {}
+            if sigma_key not in self._inv_Y_tset_cache:
+                Y = np.zeros([6, 6])
+                Y[0, 0] = -1 / self.RrestAW - 1 / self.R1AW - self.C1AW / tau
+                Y[0, 1] = 1 / self.R1AW
+                Y[1, 0] = 1 / self.R1AW
+                Y[1, 1] = -1 / self.R1AW - 1 / self.RalphaStarAW
+                Y[1, 2] = 1 / self.RalphaStarAW
+                Y[1, 3] = sigma[1]
+                Y[2, 1] = 1 / self.RalphaStarAW
+                Y[2, 2] = -1 / self.RalphaStarAW - 1 / self.RalphaStarIL - 1 / self.RalphaStarIW
+                Y[2, 4] = 1 / self.RalphaStarIW
+                Y[3, 2] = 1 / self.RalphaStarIL
+                Y[3, 3] = sigma[2]
+                Y[4, 2] = 1 / self.RalphaStarIW
+                Y[4, 3] = sigma[0]
+                Y[4, 4] = -1 / self.RalphaStarIW - 1 / self.R1IW
+                Y[4, 5] = 1 / self.R1IW
+                Y[5, 4] = 1 / self.R1IW
+                Y[5, 5] = -1 / self.R1IW - self.C1IW / tau
+                self._inv_Y_tset_cache[sigma_key] = np.linalg.inv(Y)
+            inv_Y = self._inv_Y_tset_cache[sigma_key]
 
             # VECTOR OF KNOWN VALUES
 
@@ -1203,7 +1204,7 @@ Thermal zone {self.name} 2C params:
 
             # OUTPUT (UNKNOWN) VARIABLES OF THE LINEAR SYSTEM
 
-            y = np.linalg.inv(Y).dot(q)
+            y = inv_Y.dot(q)
             # Seems to be more computationally efficient then np.insert
             return np.array([a for a in y[:3]] + [T_set] + [a for a in y[3:]]) # np.insert(y, 3, T_set)
 
