@@ -161,6 +161,8 @@ class ThermalZone(object):
         else:
             self.__volume = abs(value)
         self._air_thermal_capacity = self.__volume * air_properties["density"] * air_properties["specific_heat"]
+        # OPT-Q: direct-access alias — bypasses @property in latent_balance hot path
+        self._vol = self.__volume
 
     @property
     def number_of_units(self) -> int:
@@ -192,6 +194,8 @@ class ThermalZone(object):
             self.__air_thermal_capacity = 1e-5
         else:
             self.__air_thermal_capacity = abs(value)
+        # OPT-Q: direct-access alias — bypasses @property in sensible_balance_2C
+        self._cac = self.__air_thermal_capacity
 
     def add_temperature_setpoint(self, setpoint, mode='air'):
         """Function to associate a setpoint objects to the thermal zone
@@ -753,6 +757,9 @@ Thermal zone {self.name} 1C params:
         self._arr_RH_C       = None
         # OPT-P: preallocate Tm0 list — avoids 9960 list allocs per simulate
         self.Tm0 = [0.0, 0.0]
+        # OPT-Q: preallocate sensible_balance_2C output buffer (7 elements).
+        # Caller unpacks immediately → reuse is safe even with multiple calls/ts.
+        self._sensible_out = np.empty(7)
 
     def print_VDI6007_params(self):
         """Just a beuty print of VDI6007 parameters
@@ -1175,6 +1182,9 @@ Thermal zone {self.name} 2C params:
         if flag != 'Tset' and flag != 'phiset':
             raise TypeError(
                 f"ERROR Thermal zone {self.name}, Sensible2C flag input is not a 'Tset' or 'phiset': flag {flag}")
+        # OPT-Q: direct aliases — bypass @property dispatch per call
+        _cac = self._cac          # _air_thermal_capacity
+        _out = self._sensible_out  # preallocated output buffer
         # if np.abs((np.array(sigma).sum() - 1)) > 1e-3:
         #     raise ValueError(
         #         f"Thermal Zone {self.name}, Sensible1C: sigma total must be 1. Sigma = {sigma}"
@@ -1232,7 +1242,7 @@ Thermal zone {self.name} 2C params:
             q[3] = theta_I_lu / self.RalphaStarIL - Q_il_kon \
                    - (theta_lue - theta_I_lu) / R_lue_inf \
                    - (theta_sup - theta_I_lu) / R_lue_ve \
-                   + self._air_thermal_capacity * (theta_I_lu - self.Ta0) / tau
+                   + _cac * (theta_I_lu - self.Ta0) / tau
             q[4] = -Q_il_str_iw
             q[5] = -self.C1IW * self.Tm0[1] / tau
 
@@ -1240,7 +1250,7 @@ Thermal zone {self.name} 2C params:
 
             y = inv_Y.dot(q)
             # OPT-H1: direct numpy construction avoids list comprehensions
-            _out = np.empty(7); _out[:3] = y[:3]; _out[3] = T_set; _out[4:] = y[3:]
+            _out[:3] = y[:3]; _out[3] = T_set; _out[4:] = y[3:]
             return _out
 
         elif flag == 'phiset':
@@ -1267,7 +1277,7 @@ Thermal zone {self.name} 2C params:
                 Y[2, 3] = 1 / self.RalphaStarIL
                 Y[2, 4] = 1 / self.RalphaStarIW
                 Y[3, 2] = 1 / self.RalphaStarIL
-                Y[3, 3] = -1 / self.RalphaStarIL - 1 / R_lue_inf - 1 / R_lue_ve - self._air_thermal_capacity / tau
+                Y[3, 3] = -1 / self.RalphaStarIL - 1 / R_lue_inf - 1 / R_lue_ve - _cac / tau
                 Y[4, 2] = 1 / self.RalphaStarIW
                 Y[4, 4] = -1 / self.RalphaStarIW - 1 / self.R1IW
                 Y[4, 5] = 1 / self.R1IW
@@ -1282,7 +1292,7 @@ Thermal zone {self.name} 2C params:
             q[0] = -theta_A_eq / self.RrestAW - self.C1AW * self.Tm0[0] / tau
             q[1] = -Q_hk_aw - Q_il_str_aw
             q[2] = 0.0
-            q[3] = -Q_hk_kon - Q_il_kon - theta_lue / R_lue_inf - theta_sup / R_lue_ve - self._air_thermal_capacity * self.Ta0 / tau
+            q[3] = -Q_hk_kon - Q_il_kon - theta_lue / R_lue_inf - theta_sup / R_lue_ve - _cac * self.Ta0 / tau
             q[4] = -Q_hk_iw - Q_il_str_iw
             q[5] = -self.C1IW * self.Tm0[1] / tau
 
@@ -1290,7 +1300,7 @@ Thermal zone {self.name} 2C params:
 
             y = inv_Y.dot(q)
             # OPT-H1: direct numpy construction avoids list comprehensions
-            _out = np.empty(7); _out[:4] = y[:4]; _out[4] = phi_HC_set; _out[5:] = y[4:]
+            _out[:4] = y[:4]; _out[4] = phi_HC_set; _out[5:] = y[4:]
             return _out
 
         else:
@@ -1346,23 +1356,24 @@ Thermal zone {self.name} 2C params:
         G_da_vent = G_ve[0]
         G_da_inf  = G_ve[1]
 
-        # OPT-J: use class-level constants instead of per-call dict lookups
+        # OPT-J: class-level constants; OPT-Q: _vol direct alias bypasses @property
         rho_air          = ThermalZone._LAT_AIR_RHO
         vapour_lat_heat  = ThermalZone._LAT_VAP_LAT_HEAT
         vapour_spec_heat = ThermalZone._LAT_VAP_CP
         tau              = ThermalZone._LAT_TAU
+        _vol             = self._vol  # OPT-Q: direct access, no property dispatch
 
         if flag == 'rhset':
             phi_lat = (G_da_inf * (x_ext - x_int_set) + G_da_vent * (
-                    x_sup - x_int_set) - rho_air * self._volume * (x_int_set - self.xm0) / tau) * (
+                    x_sup - x_int_set) - rho_air * _vol * (x_int_set - self.xm0) / tau) * (
                               vapour_lat_heat + vapour_spec_heat * t_air_int) + vapour_int_load * (
                               vapour_lat_heat + vapour_spec_heat * t_air_int)
             x_int = x_int_set
             phi_lat = -phi_lat
         elif flag == 'phiset':
             x_int = (G_da_inf * x_ext + G_da_vent * x_sup + phi_HC_set / (
-                    vapour_lat_heat + vapour_spec_heat * t_air_int) + vapour_int_load + rho_air * self._volume * self.xm0 / tau) / (
-                            G_da_inf + G_da_vent + rho_air * self._volume / tau)
+                    vapour_lat_heat + vapour_spec_heat * t_air_int) + vapour_int_load + rho_air * _vol * self.xm0 / tau) / (
+                            G_da_inf + G_da_vent + rho_air * _vol / tau)
             phi_lat = phi_HC_set
         else:
             raise ValueError(f'Humidity system zone solution: flag must be "phiset" or "rhset", flag: {flag}')

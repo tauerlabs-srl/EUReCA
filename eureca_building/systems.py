@@ -199,7 +199,9 @@ class System(metaclass=abc.ABCMeta):
         solar_gain=self.solar_gain_out
         self.tank_discharge=0
         self.dhw_capacity_to_tank=0
-        loss_rate=self.losses_discharging_rate*max(1,self.dhw_tank_current_charge_perc)
+        # OPT-Q: ternary instead of max()/min() builtins (~50k calls/simulate each)
+        _perc = self.dhw_tank_current_charge_perc
+        loss_rate = self.losses_discharging_rate * (_perc if _perc > 1 else 1)
         self.storage_tank_loss=self.dhw_tank_design_charge * loss_rate * _INV_TS * 0.01
 
         self.dhw_tank_current_charge=self.dhw_tank_current_charge+solar_gain-dhw_demand * _INV_TS
@@ -207,7 +209,9 @@ class System(metaclass=abc.ABCMeta):
         self.dhw_tank_current_charge_perc = self.dhw_tank_current_charge / self.dhw_tank_design_charge *100
         if (self.dhw_tank_current_charge<self.dhw_tank_minimum_charge):
             self.charging_mode = 1
-            self.dhw_capacity_to_tank=min(self.dhw_tank_design_charge-self.dhw_tank_current_charge,self.dhw_design_load * _INV_TS)
+            _cap_a = self.dhw_tank_design_charge - self.dhw_tank_current_charge
+            _cap_b = self.dhw_design_load * _INV_TS
+            self.dhw_capacity_to_tank = _cap_a if _cap_a < _cap_b else _cap_b
             self.dhw_tank_current_charge=self.dhw_tank_current_charge+self.dhw_capacity_to_tank
         if (self.dhw_tank_current_charge>self.dhw_tank_maximum_charge):
             self.discharging_mode = 1

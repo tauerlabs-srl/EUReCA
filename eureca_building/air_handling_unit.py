@@ -305,11 +305,11 @@ class AirHandlingUnit(_BaseAirHandlingUnit):
         )  # corrected x_ext for every timestep; equals raw x_ext when sat is OK
 
         # OPT-H3: cache direct numpy array references to bypass @property overhead.
-        # These are read-only handles to the underlying _schedule arrays; writes
-        # to schedule[t] via the Schedule setter go to the same arrays. ✓
         self._ahu_op_arr = self._ahu_operation._schedule
         self._t_sup_arr  = self._supply_temperature._schedule
         self._x_sup_arr  = self._supply_specific_humidity._schedule
+        # OPT-Q: cache humidity_control bool — bypasses @property in every AHU call
+        self._hum_ctrl   = self._humidity_control
 
         # Association of AHU to thermal zone
         try:
@@ -514,7 +514,7 @@ class AirHandlingUnit(_BaseAirHandlingUnit):
         # BATTERIES DEMAND CALCULATION
         
         # SENSIBLE AND LATENT CONTROL MODE
-        if self.humidity_control == True:
+        if self._hum_ctrl:
         
             # Heating mode
             if AHU_operation == 1:
@@ -672,7 +672,7 @@ class AirHandlingUnit(_BaseAirHandlingUnit):
         
         
         # SENSIBLE CONTROL MODE
-        if self.humidity_control == False:
+        if not self._hum_ctrl:
             
             
             # Heating mode
