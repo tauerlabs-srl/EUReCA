@@ -44,6 +44,13 @@ class ThermalZone(object):
     """Thermal zone class. Manages all the models and time step solution of the sensible and latent systems
     """
 
+    # OPT-J: class-level constants — avoids per-call dict lookup of air_properties
+    # and vapour_properties inside latent_balance() (54k+ calls per calibration call)
+    _LAT_AIR_RHO      = air_properties['density']           # kg/m3
+    _LAT_VAP_LAT_HEAT = vapour_properties['latent_heat']    # J/kg
+    _LAT_VAP_CP       = vapour_properties['specific_heat']  # J/(kg K)
+    _LAT_TAU          = CONFIG.time_step                    # s
+
     def __init__(self, name: str, surface_list: list, net_floor_area=None, volume=None, number_of_units: int=1):
         """Int method. Creates the thermal zone object from a list of eureca_building.surface.Surface.
         Checks the inputs through properties
@@ -1320,13 +1327,13 @@ Thermal zone {self.name} 2C params:
         x_int_set = 0.622 * (rh_int_set * p_intsat / (p_atm - (rh_int_set * p_intsat)))
 
         G_da_vent = G_ve[0]
-        G_da_inf = G_ve[1]
+        G_da_inf  = G_ve[1]
 
-        rho_air = air_properties['density']
-        vapour_lat_heat = vapour_properties['latent_heat']
-        vapour_spec_heat = vapour_properties['specific_heat']
-
-        tau = CONFIG.time_step
+        # OPT-J: use class-level constants instead of per-call dict lookups
+        rho_air          = ThermalZone._LAT_AIR_RHO
+        vapour_lat_heat  = ThermalZone._LAT_VAP_LAT_HEAT
+        vapour_spec_heat = ThermalZone._LAT_VAP_CP
+        tau              = ThermalZone._LAT_TAU
 
         if flag == 'rhset':
             phi_lat = (G_da_inf * (x_ext - x_int_set) + G_da_vent * (
