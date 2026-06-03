@@ -1215,34 +1215,35 @@ Thermal zone {self.name} 2C params:
             Q_hk_aw = phi_HC_set * sigma[1]  # % radiant heat flow from HVAC system (on surface node AW)
             Q_hk_kon = phi_HC_set * sigma[2]  # % convective heat flow from HVAC system (on air node)
 
-            # MATRIX OF THERMAL TRANSMITTANCES
+            # OPT-A: cache inv(Y_phiset) keyed on (H_ve_mec, H_ve_inf).
+            # Y_phiset only varies through R_lue_ve and R_lue_inf (from ventilation schedules).
+            # Schedules have discrete values → near-100% cache hit rate after initial fill.
+            # q is rebuilt every timestep (depends on weather + state); only inv_Y is cached.
+            if not hasattr(self, '_inv_Y_phiset_cache'):
+                self._inv_Y_phiset_cache = {}
+            _phiset_key = (Hve[0], Hve[1])
+            if _phiset_key not in self._inv_Y_phiset_cache:
+                Y = np.zeros([6, 6])
+                Y[0, 0] = -1 / self.RrestAW - 1 / self.R1AW - self.C1AW / tau
+                Y[0, 1] = 1 / self.R1AW
+                Y[1, 0] = 1 / self.R1AW
+                Y[1, 1] = -1 / self.R1AW - 1 / self.RalphaStarAW
+                Y[1, 2] = 1 / self.RalphaStarAW
+                Y[2, 1] = 1 / self.RalphaStarAW
+                Y[2, 2] = -1 / self.RalphaStarAW - 1 / self.RalphaStarIL - 1 / self.RalphaStarIW
+                Y[2, 3] = 1 / self.RalphaStarIL
+                Y[2, 4] = 1 / self.RalphaStarIW
+                Y[3, 2] = 1 / self.RalphaStarIL
+                Y[3, 3] = -1 / self.RalphaStarIL - 1 / R_lue_inf - 1 / R_lue_ve - self._air_thermal_capacity / tau
+                Y[4, 2] = 1 / self.RalphaStarIW
+                Y[4, 4] = -1 / self.RalphaStarIW - 1 / self.R1IW
+                Y[4, 5] = 1 / self.R1IW
+                Y[5, 4] = 1 / self.R1IW
+                Y[5, 5] = -1 / self.R1IW - self.C1IW / tau
+                self._inv_Y_phiset_cache[_phiset_key] = np.linalg.inv(Y)
+            inv_Y = self._inv_Y_phiset_cache[_phiset_key]
 
-            Y = np.zeros([6, 6])
-
-            Y[0, 0] = -1 / self.RrestAW - 1 / self.R1AW - self.C1AW / tau
-            Y[0, 1] = 1 / self.R1AW
-
-            Y[1, 0] = 1 / self.R1AW
-            Y[1, 1] = -1 / self.R1AW - 1 / self.RalphaStarAW
-            Y[1, 2] = 1 / self.RalphaStarAW
-
-            Y[2, 1] = 1 / self.RalphaStarAW
-            Y[2, 2] = -1 / self.RalphaStarAW - 1 / self.RalphaStarIL - 1 / self.RalphaStarIW
-            Y[2, 3] = 1 / self.RalphaStarIL
-            Y[2, 4] = 1 / self.RalphaStarIW
-
-            Y[3, 2] = 1 / self.RalphaStarIL
-            Y[3, 3] = -1 / self.RalphaStarIL - 1 / R_lue_inf - 1 / R_lue_ve - self._air_thermal_capacity / tau
-
-            Y[4, 2] = 1 / self.RalphaStarIW
-
-            Y[4, 4] = -1 / self.RalphaStarIW - 1 / self.R1IW
-            Y[4, 5] = 1 / self.R1IW
-
-            Y[5, 4] = 1 / self.R1IW
-            Y[5, 5] = -1 / self.R1IW - self.C1IW / tau
-
-            # VECTOR OF KNOWN TERMS
+            # VECTOR OF KNOWN TERMS (rebuilt every timestep — depends on weather + state)
 
             q = np.zeros(6)
             q[0] = -theta_A_eq / self.RrestAW - self.C1AW * self.Tm0[0] / tau
@@ -1254,7 +1255,7 @@ Thermal zone {self.name} 2C params:
 
             # OUTPUT LINEAR SYSTEM
 
-            y = np.linalg.inv(Y).dot(q)
+            y = inv_Y.dot(q)
             # Seems to be more computationally efficient then np.insert
             return np.array([num for num in y[:4]] + [phi_HC_set] + [num for num in y[4:]]) # np.insert(y, 4, phi_HC_set)
 
