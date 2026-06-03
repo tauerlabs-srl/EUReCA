@@ -255,6 +255,90 @@ Please run thermal zones design_sensible_cooling_load and design_heating_load
         self.heating_system.solve_system(heat_load, dhw_load, weather, t, air_t, air_rh)
         self.cooling_system.solve_system(cool_load, weather, t, air_t, air_rh)
 
+    def simulate_calibration(self, weather_object: WeatherFile) -> dict:
+        """Fast simulation for calibration solver iterations.
+
+        Runs the identical timestep loop as simulate() but accumulates only the
+        3 energy carriers needed by the calibration residual computation
+        (electricity, gas, district heating) as monthly running sums.
+        Returns AnnualCalibrationTotals and MonthlyCalibrationTotals directly —
+        no DataFrame, no pandas, no MultiIndex overhead.
+
+        Results are numerically identical to calling simulate() followed by
+        _parse_simulation_dataframe() in MasterB's pipeline.py.
+        """
+        for tz in self._thermal_zones_list:
+            tz.reset_init_values()
+
+        _t_start        = CONFIG.start_time_step
+        _t_stop         = CONFIG.final_time_step
+        _preproc        = 50 * (_t_stop - _t_start) // 365
+        _inv_ts         = 1.0 / CONFIG.ts_per_hour
+
+        # Appliances: precomputed outside the loop (vectorised) — kWh per timestep
+        _appliances_kwh = (
+            np.array([tz.electric_load for tz in self._thermal_zones_list]).sum(axis=0)
+            / CONFIG.ts_per_hour / 1000.0
+        )
+
+        # Month-of-year array (1–12) for each simulation timestep — computed once, cached
+        if not hasattr(self, '_cal_month_arr'):
+            self._cal_month_arr = pd.date_range(
+                start=CONFIG.start_date,
+                periods=CONFIG.number_of_time_steps,
+                freq=f"{CONFIG.time_step}s",
+            ).month.values
+        _months = self._cal_month_arr
+
+        _elec_m = np.zeros(12)
+        _gas_m  = np.zeros(12)
+        _dh_m   = np.zeros(12)
+
+        _hs = self.heating_system
+        _cs = self.cooling_system
+
+        if len(self._thermal_zones_list) == 1:
+            _tz0 = self._thermal_zones_list[0]
+            for t in range(_t_start - _preproc, _t_stop):
+                self.solve_timestep(t, weather_object)
+                if t >= _t_start:
+                    _m = _months[t - _t_start] - 1
+                    _elec_m[_m] += (
+                        _hs.electric_consumption * 0.001
+                        + _cs.electric_consumption * 0.001
+                        + _tz0.AHU_electric_consumption * 0.001 * _inv_ts
+                        + _appliances_kwh[t]
+                    )
+                    _gas_m[_m] += _hs.gas_consumption / 1.055
+                    _dh_m[_m]  += _hs.DH_consumption  * 0.001
+        else:
+            for t in range(_t_start - _preproc, _t_stop):
+                self.solve_timestep(t, weather_object)
+                if t >= _t_start:
+                    _m = _months[t - _t_start] - 1
+                    _ahu_e = sum(tz.AHU_electric_consumption for tz in self._thermal_zones_list)
+                    _elec_m[_m] += (
+                        _hs.electric_consumption * 0.001
+                        + _cs.electric_consumption * 0.001
+                        + _ahu_e * 0.001 * _inv_ts
+                        + _appliances_kwh[t]
+                    )
+                    _gas_m[_m] += _hs.gas_consumption / 1.055
+                    _dh_m[_m]  += _hs.DH_consumption  * 0.001
+
+        return {
+            "AnnualCalibrationTotals": {
+                "total_electricity_kwh":      float(_elec_m.sum()),
+                "total_gas_smc":              float(_gas_m.sum()),
+                "total_district_heating_kwh": float(_dh_m.sum()),
+            },
+            "MonthlyCalibrationTotals": {
+                "electricity_kwh_by_month":      {i + 1: float(_elec_m[i]) for i in range(12)},
+                "gas_smc_by_month":              {i + 1: float(_gas_m[i])  for i in range(12)},
+                "district_heating_kwh_by_month": {i + 1: float(_dh_m[i])  for i in range(12)},
+            },
+        }
+
     def simulate(self,
                  weather_object: WeatherFile,
                  t_start: int = CONFIG.start_time_step,
