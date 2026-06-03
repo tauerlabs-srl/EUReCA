@@ -725,6 +725,10 @@ Thermal zone {self.name} 1C params:
         # OPT-H2: preallocate phi_load and H_ve lists — reused every timestep
         self._phi_load_buf = [0.0, 0.0, 0.0]
         self._H_ve_buf     = [0.0, 0.0]
+        # OPT-I: initialise matrix-inverse caches here (once per build) so that
+        # sensible_balance_2C never needs hasattr() in the 64k-call hot loop.
+        self._inv_Y_tset_cache   = {}
+        self._inv_Y_phiset_cache = {}
 
     def print_VDI6007_params(self):
         """Just a beuty print of VDI6007 parameters
@@ -1172,8 +1176,6 @@ Thermal zone {self.name} 2C params:
             # On first call for a given sigma, build Y and cache its inverse.
             # All subsequent calls skip the inversion and do only a dot product.
             sigma_key = (sigma[0], sigma[1], sigma[2])
-            if not hasattr(self, '_inv_Y_tset_cache'):
-                self._inv_Y_tset_cache = {}
             if sigma_key not in self._inv_Y_tset_cache:
                 Y = self._Y_buf; Y[:] = 0.0  # OPT-F: reuse preallocated buffer
                 Y[0, 0] = -1 / self.RrestAW - 1 / self.R1AW - self.C1AW / tau
@@ -1228,8 +1230,6 @@ Thermal zone {self.name} 2C params:
             # Y_phiset only varies through R_lue_ve and R_lue_inf (from ventilation schedules).
             # Schedules have discrete values → near-100% cache hit rate after initial fill.
             # q is rebuilt every timestep (depends on weather + state); only inv_Y is cached.
-            if not hasattr(self, '_inv_Y_phiset_cache'):
-                self._inv_Y_phiset_cache = {}
             _phiset_key = (Hve[0], Hve[1])
             if _phiset_key not in self._inv_Y_phiset_cache:
                 Y = np.zeros([6, 6])
