@@ -465,11 +465,23 @@ class AirHandlingUnit(_BaseAirHandlingUnit):
 
         OutAirRatio = self.outdoor_air_ratio
 
-        # AHU_operation == 0: supply humidity must use corrected x_ext
+        # OPT-L: fast path for AHU off (~17% of timesteps for office buildings).
+        # Skips enthalpy, heat-recovery and mixer calculations whose results are
+        # immediately overwritten by the AHU_operation==0 block below.
         if AHU_operation == 0:
             self.x_sup = x_ext
-        
-        
+            self.h_ext = self.cp_air * T_ext + (self.r_0 + self.cpv * T_ext) * x_ext
+            self.T_hr  = self.T_mix = T_ext
+            self.x_hr  = self.x_mix = x_ext
+            self.h_hr  = self.h_mix = self.h_sup = self.h_ph = self.h_as = self.h_ext
+            self.T_ph  = self.T_as = T_ext
+            self.x_ph  = self.x_as = x_ext
+            self.preh_deu_Dem = self.preh_deu_Dem_sens = self.preh_deu_Dem_lat = 0.
+            self.sat_Dem = self.sat_Dem_lat = self.sat_Dem_sens = 0.
+            self.posth_Dem = self.posth_Dem_sens = self.posth_Dem_lat = 0.
+            self.AHU_demand = self.AHU_demand_sens = self.AHU_demand_lat = 0
+            return
+
         # Pre-processing on Heat Recovery and Mixer
         # Enthalpy in J/(kg)
         self.h_ext = self.cp_air*T_ext + (self.r_0 + self.cpv*T_ext)*x_ext
