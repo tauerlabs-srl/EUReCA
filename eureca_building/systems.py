@@ -202,7 +202,7 @@ class System(metaclass=abc.ABCMeta):
         # OPT-Q: ternary instead of max()/min() builtins (~50k calls/simulate each)
         _perc = self.dhw_tank_current_charge_perc
         loss_rate = self.losses_discharging_rate * (_perc if _perc > 1 else 1)
-        self.storage_tank_loss=self.dhw_tank_design_charge * loss_rate * _INV_TS * 0.01
+        self.storage_tank_loss=self.dhw_tank_design_charge * loss_rate * _INV_TS / 100
 
         self.dhw_tank_current_charge=self.dhw_tank_current_charge+solar_gain-dhw_demand * _INV_TS
         self.dhw_tank_current_charge=self.dhw_tank_current_charge-self.storage_tank_loss

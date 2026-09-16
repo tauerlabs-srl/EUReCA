@@ -1470,7 +1470,7 @@ Thermal zone {self.name} 2C params:
         _t_idx = t - _ts_start
         _nv_af['kg/s'][_t_idx]  = nat_vent_mass_flow
         _nv_af['m3/s'][_t_idx]  = nat_vent_vol_flow
-        _nv_af['L/s'][_t_idx]   = nat_vent_vol_flow * 0.001
+        _nv_af['L/s'][_t_idx]   = nat_vent_vol_flow / 1000
         _nv_af['m3/h'][_t_idx]  = nat_vent_vol_flow * 3600
         _nv_af['vol/h'][_t_idx] = nat_vent_vol_flow / self._volume * 3600
         G_OA_nat_vent = self.infiltration_air_flow_rate[t] + nat_vent_mass_flow
@@ -1673,12 +1673,12 @@ Thermal zone {self.name} 2C params:
         _tm0 = self.Tm0             # OPT-P: reuse preallocated list
         if model == '1C':
             _tm0[0] = Tm; _tm0[1] = Tm   # OPT-P: in-place update, no list alloc
-            operative_temp = (Ts + Ta) * 0.5
+            operative_temp = (Ts + Ta)/2
             mean_radiant_temp = Ts
         elif model == '2C':
             _tm0[0] = Tm_aw; _tm0[1] = Tm_iw  # OPT-P: in-place update
-            _mr = Ts_aw * _Aaw_frac + Ts_iw * (1.0 - _Aaw_frac)
-            operative_temp = (_mr + Ta) * 0.5
+            _mr = Ts_aw * self.Aaw_tot/self.Araum_tot + Ts_iw * ( 1- self.Aaw_tot/self.Araum_tot)
+            operative_temp = (_mr + Ta)/2
             mean_radiant_temp = _mr
         self.Ta0 = Ta
         self.xm0 = x_int

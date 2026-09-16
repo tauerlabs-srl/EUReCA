@@ -239,8 +239,10 @@ Please run thermal zones design_sensible_cooling_load and design_heating_load
             if _preh > 0.:  heat_load += _preh
             else:           cool_load += _preh
             heat_load += _ahu.posth_Dem
-            if _ll > 0.:  heat_load += _ll + _ll   # added twice (original)
-            else:         cool_load += _ll + _ll
+            if _ll > 0.:  heat_load += _ll
+            else:         cool_load += _ll
+            if _ll > 0.:  heat_load += _ll
+            else:         cool_load += _ll
             _air_t  = _tz.zone_air_temperature
             _air_rh = _tz.zone_air_rel_humidity
             self.heating_system.solve_system(heat_load, _tz.domestic_hot_water_demand[t], weather, t, _air_t, _air_rh)
@@ -316,9 +318,13 @@ Please run thermal zones design_sensible_cooling_load and design_heating_load
             ).month.values
         _months = self._cal_month_arr
 
-        _elec_m = np.zeros(12)
-        _gas_m  = np.zeros(12)
-        _dh_m   = np.zeros(12)
+        # Per-timestep buffers, not running monthly sums: the aggregation at the end must
+        # reproduce the exact summation order of the DataFrame path, or the totals differ in
+        # the last bits and the calibration objective is no longer the same function.
+        _n_ts   = _t_stop - _t_start
+        _elec_t = np.zeros(_n_ts)
+        _gas_t  = np.zeros(_n_ts)
+        _dh_t   = np.zeros(_n_ts)
 
         _hs = self.heating_system
         _cs = self.cooling_system
@@ -331,41 +337,51 @@ Please run thermal zones design_sensible_cooling_load and design_heating_load
                 self.solve_timestep(t, weather_object)
             for t in range(_t_start, _t_stop):               # main: accumulate directly
                 self.solve_timestep(t, weather_object)
-                _m = _months[t - _t_start] - 1
-                _elec_m[_m] += (
-                    _hs.electric_consumption * 0.001
-                    + _cs.electric_consumption * 0.001
-                    + _tz0.AHU_electric_consumption * 0.001 * _inv_ts
+                _i = t - _t_start
+                # Term order mirrors simulate(): heating + cooling + appliances + AHU.
+                _elec_t[_i] = (
+                    _hs.electric_consumption / 1000
+                    + _cs.electric_consumption / 1000
                     + _appliances_kwh[t]
+                    + _tz0.AHU_electric_consumption / 1000 * _inv_ts
                 )
-                _gas_m[_m] += _hs.gas_consumption / 1.055
-                _dh_m[_m]  += _hs.DH_consumption  * 0.001
+                _gas_t[_i] = _hs.gas_consumption / 1.055
+                _dh_t[_i]  = _hs.DH_consumption  / 1000
         else:
             for t in range(_t_start - _preproc, _t_start):
                 self.solve_timestep(t, weather_object)
             for t in range(_t_start, _t_stop):
                 self.solve_timestep(t, weather_object)
-                _m = _months[t - _t_start] - 1
-                _ahu_e = sum(tz.AHU_electric_consumption for tz in self._thermal_zones_list)
-                _elec_m[_m] += (
-                    _hs.electric_consumption * 0.001
-                    + _cs.electric_consumption * 0.001
-                    + _ahu_e * 0.001 * _inv_ts
+                _i = t - _t_start
+                _ahu_e = np.array([tz.AHU_electric_consumption / 1000
+                                   for tz in self._thermal_zones_list]).sum() * _inv_ts
+                _elec_t[_i] = (
+                    _hs.electric_consumption / 1000
+                    + _cs.electric_consumption / 1000
                     + _appliances_kwh[t]
+                    + _ahu_e
                 )
-                _gas_m[_m] += _hs.gas_consumption / 1.055
-                _dh_m[_m]  += _hs.DH_consumption  * 0.001
+                _gas_t[_i] = _hs.gas_consumption / 1.055
+                _dh_t[_i]  = _hs.DH_consumption  / 1000
+
+        _idx = pd.date_range(
+            start=CONFIG.start_date,
+            periods=CONFIG.number_of_time_steps,
+            freq=f"{CONFIG.time_step}s",
+        )
+        def _monthly(arr):
+            return {int(m): float(v) for m, v in pd.Series(arr, index=_idx).groupby(_idx.month).sum().items()}
 
         return {
             "AnnualCalibrationTotals": {
-                "total_electricity_kwh":      float(_elec_m.sum()),
-                "total_gas_smc":              float(_gas_m.sum()),
-                "total_district_heating_kwh": float(_dh_m.sum()),
+                "total_electricity_kwh":      float(_elec_t.sum()),
+                "total_gas_smc":              float(_gas_t.sum()),
+                "total_district_heating_kwh": float(_dh_t.sum()),
             },
             "MonthlyCalibrationTotals": {
-                "electricity_kwh_by_month":      {i + 1: float(_elec_m[i]) for i in range(12)},
-                "gas_smc_by_month":              {i + 1: float(_gas_m[i])  for i in range(12)},
-                "district_heating_kwh_by_month": {i + 1: float(_dh_m[i])  for i in range(12)},
+                "electricity_kwh_by_month":      _monthly(_elec_t),
+                "gas_smc_by_month":              _monthly(_gas_t),
+                "district_heating_kwh_by_month": _monthly(_dh_t),
             },
         }
 
@@ -500,17 +516,17 @@ Please run thermal zones design_sensible_cooling_load and design_heating_load
                 _r_to[_i, 0]       = _tz.zone_operative_temperature
                 _r_tmr[_i, 0]      = _tz.zone_mean_radiant_temperature
                 _r_rh[_i, 0]       = _tz.zone_air_rel_humidity
-                _r_sens[_i, 0]     = _tz.sensible_zone_load * 0.001
-                _r_lat[_i, 0]      = _tz.latent_zone_load * 0.001
-                _r_ahu_pre[_i, 0]  = _ahu.preh_deu_Dem * 0.001
-                _r_ahu_post[_i, 0] = _ahu.posth_Dem * 0.001
-                _ahu_e             = _tz.AHU_electric_consumption * 0.001
+                _r_sens[_i, 0]     = _tz.sensible_zone_load / 1000
+                _r_lat[_i, 0]      = _tz.latent_zone_load / 1000
+                _r_ahu_pre[_i, 0]  = _ahu.preh_deu_Dem / 1000
+                _r_ahu_post[_i, 0] = _ahu.posth_Dem / 1000
+                _ahu_e             = _tz.AHU_electric_consumption / 1000
                 _r_ahu_elec[_i, 0] = _ahu_e
                 _r_dhw_mode[_i, 0] = _hs.charging_mode
                 _r_dhw_perc[_i, 0] = _hs.dhw_tank_current_charge_perc
-                _r_dhw_kwh[_i, 0]  = _hs.dhw_tank_current_charge * 0.001
-                _r_nonren[_i, 0]   = _hs.dhw_capacity_to_tank * 0.001
-                _r_solar[_i, 0]    = _hs.solar_gain_out * 0.001 if _has_solar else 0
+                _r_dhw_kwh[_i, 0]  = _hs.dhw_tank_current_charge / 1000
+                _r_nonren[_i, 0]   = _hs.dhw_capacity_to_tank / 1000
+                _r_solar[_i, 0]    = _hs.solar_gain_out / 1000 if _has_solar else 0
                 _r_gas[_i, 0]      = _hs.gas_consumption / 1.055
                 _r_oil[_i, 0]      = _hs.oil_consumption
                 _r_gasoline[_i, 0] = _hs.gasoline_consumption
@@ -518,9 +534,9 @@ Please run thermal zones design_sensible_cooling_load and design_heating_load
                 _r_coal[_i, 0]     = _hs.coal_consumption
                 _r_wood[_i, 0]     = _hs.wood_consumption
                 _r_pellet[_i, 0]   = _hs.pellet_consumption
-                _r_dh[_i, 0]       = _hs.DH_consumption * 0.001
-                _r_elec_h[_i, 0]   = _hs.electric_consumption * 0.001
-                _r_elec_c[_i, 0]   = _cs.electric_consumption * 0.001
+                _r_dh[_i, 0]       = _hs.DH_consumption / 1000
+                _r_elec_h[_i, 0]   = _hs.electric_consumption / 1000
+                _r_elec_c[_i, 0]   = _cs.electric_consumption / 1000
                 _r_ahu_e2[_i, 0]   = _ahu_e * _inv_ts
         else:
             for t in range(t_start - preprocessing_ts, t_stop):
@@ -530,16 +546,16 @@ Please run thermal zones design_sensible_cooling_load and design_heating_load
                 _r_to[_i, :]       = [tz.zone_operative_temperature for tz in self._thermal_zones_list]
                 _r_tmr[_i, :]      = [tz.zone_mean_radiant_temperature for tz in self._thermal_zones_list]
                 _r_rh[_i, :]       = [tz.zone_air_rel_humidity for tz in self._thermal_zones_list]
-                _r_sens[_i, :]     = [tz.sensible_zone_load * 0.001 for tz in self._thermal_zones_list]
-                _r_lat[_i, :]      = [tz.latent_zone_load * 0.001 for tz in self._thermal_zones_list]
-                _r_ahu_pre[_i, :]  = [tz.air_handling_unit.preh_deu_Dem * 0.001 for tz in self._thermal_zones_list]
-                _r_ahu_post[_i, :] = [tz.air_handling_unit.posth_Dem * 0.001 for tz in self._thermal_zones_list]
-                _r_ahu_elec[_i, :] = [tz.AHU_electric_consumption * 0.001 for tz in self._thermal_zones_list]
+                _r_sens[_i, :]     = [tz.sensible_zone_load / 1000 for tz in self._thermal_zones_list]
+                _r_lat[_i, :]      = [tz.latent_zone_load / 1000 for tz in self._thermal_zones_list]
+                _r_ahu_pre[_i, :]  = [tz.air_handling_unit.preh_deu_Dem / 1000 for tz in self._thermal_zones_list]
+                _r_ahu_post[_i, :] = [tz.air_handling_unit.posth_Dem / 1000 for tz in self._thermal_zones_list]
+                _r_ahu_elec[_i, :] = [tz.AHU_electric_consumption / 1000 for tz in self._thermal_zones_list]
                 _r_dhw_mode[_i, 0] = _hs.charging_mode
                 _r_dhw_perc[_i, 0] = _hs.dhw_tank_current_charge_perc
-                _r_dhw_kwh[_i, 0]  = _hs.dhw_tank_current_charge * 0.001
-                _r_nonren[_i, 0]   = _hs.dhw_capacity_to_tank * 0.001
-                _r_solar[_i, 0]    = _hs.solar_gain_out * 0.001 if _has_solar else 0
+                _r_dhw_kwh[_i, 0]  = _hs.dhw_tank_current_charge / 1000
+                _r_nonren[_i, 0]   = _hs.dhw_capacity_to_tank / 1000
+                _r_solar[_i, 0]    = _hs.solar_gain_out / 1000 if _has_solar else 0
                 _r_gas[_i, 0]      = _hs.gas_consumption / 1.055
                 _r_oil[_i, 0]      = _hs.oil_consumption
                 _r_gasoline[_i, 0] = _hs.gasoline_consumption
@@ -547,9 +563,9 @@ Please run thermal zones design_sensible_cooling_load and design_heating_load
                 _r_coal[_i, 0]     = _hs.coal_consumption
                 _r_wood[_i, 0]     = _hs.wood_consumption
                 _r_pellet[_i, 0]   = _hs.pellet_consumption
-                _r_dh[_i, 0]       = _hs.DH_consumption * 0.001
-                _r_elec_h[_i, 0]   = _hs.electric_consumption * 0.001
-                _r_elec_c[_i, 0]   = _cs.electric_consumption * 0.001
+                _r_dh[_i, 0]       = _hs.DH_consumption / 1000
+                _r_elec_h[_i, 0]   = _hs.electric_consumption / 1000
+                _r_elec_c[_i, 0]   = _cs.electric_consumption / 1000
                 _r_ahu_e2[_i, 0]   = _r_ahu_elec[_i, :].sum() * _inv_ts
 
         # results[ 'Solar Thermal PRoduction [Wh]'] = np.array(self.heating_system.solar_gain)
