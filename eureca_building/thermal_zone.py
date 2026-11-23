@@ -351,16 +351,24 @@ class ThermalZone(object):
         radiant = np.zeros(CONFIG.number_of_time_steps_year)
         latent = np.zeros(CONFIG.number_of_time_steps_year)
         electric = np.zeros(CONFIG.number_of_time_steps_year)
+        electric_lights = np.zeros(CONFIG.number_of_time_steps_year)
+        electric_other_devices = np.zeros(CONFIG.number_of_time_steps_year)
         for load in self.internal_loads_list:
             load_conv, load_rad, load_lat, load_el = load.get_loads(area=self._net_floor_area)
             convective += load_conv
             radiant += load_rad
             latent += load_lat
             electric += load_el
+            if isinstance(load, Lights):
+                electric_lights += load_el
+            else:
+                electric_other_devices += load_el
         self.convective_load = convective
         self.radiative_load = radiant
         self.latent_load = latent
         self.electric_load = electric
+        self.electric_lights = electric_lights
+        self.electric_other_devices = electric_other_devices
         return {'convective [W]': convective,
                 'radiative [W]': radiant,
                 'latent [kg_vap/s]': latent,

@@ -454,6 +454,7 @@ Please run thermal zones design_sensible_cooling_load and design_heating_load
             # 'PV Production [W]': np.zeros([CONFIG.number_of_time_steps, 1]),
             'AHU electric consumption [kWh]': np.zeros([CONFIG.number_of_time_steps, 1]),
             'Appliances electric consumption [kWh]': np.zeros([CONFIG.number_of_time_steps, 1]),
+            'Lighting electric consumption [kWh]': np.zeros([CONFIG.number_of_time_steps, 1]),
             'Electric consumption [kWh]':np.zeros([CONFIG.number_of_time_steps, 1]),
             'Primary Energy [kWh]': np.zeros([CONFIG.number_of_time_steps, 1]),
             'Primary Non-Renewable Energy [kWh]': np.zeros([CONFIG.number_of_time_steps, 1]),
@@ -467,7 +468,11 @@ Please run thermal zones design_sensible_cooling_load and design_heating_load
 
         
         electric_consumption = np.array([tz.electric_load for tz in self._thermal_zones_list]).sum(axis=0) / CONFIG.ts_per_hour
+        lights_consumption = np.array([tz.electric_lights for tz in self._thermal_zones_list]).sum(axis=0) / CONFIG.ts_per_hour
+        other_devices_consumption = np.array([tz.electric_other_devices for tz in self._thermal_zones_list]).sum(axis=0) / CONFIG.ts_per_hour
         results['Appliances electric consumption [kWh]'][:, 0] = electric_consumption[CONFIG.start_time_step:CONFIG.final_time_step]/1000
+        results['Lights electric consumption [kWh]'][:, 0] = lights_consumption[CONFIG.start_time_step:CONFIG.final_time_step]/1000
+        results['Other devices electric consumption [kWh]'][:, 0] = other_devices_consumption[CONFIG.start_time_step:CONFIG.final_time_step]/1000
 
         results['TZ DHW volume flow rate [L/s]'] = 1000 * np.array([tz.domestic_hot_water_volume_flow_rate for tz in self._thermal_zones_list]).T[CONFIG.start_time_step:CONFIG.final_time_step]
         results['TZ DHW demand [kW]'] = np.array([tz.domestic_hot_water_demand for tz in self._thermal_zones_list]).T[CONFIG.start_time_step:CONFIG.final_time_step]/1000
@@ -774,8 +779,16 @@ Please run thermal zones design_sensible_cooling_load and design_heating_load
 
         electric_consumption = np.array([tz.electric_load for tz in self._thermal_zones_list]).sum(
             axis=0) / CONFIG.ts_per_hour # Wh
+        other_devices_consumption = np.array([tz.electric_other_devices for tz in self._thermal_zones_list]).sum(
+            axis=0) / CONFIG.ts_per_hour # Wh
+        lights_consumption = np.array([tz.electric_lights for tz in self._thermal_zones_list]).sum(
+            axis=0) / CONFIG.ts_per_hour # Wh
 
         results['Appliances electric consumption [Wh]'] = get_monthly_value_from_annual_vector(electric_consumption,
+        method='sum')
+        results['Lights electric consumption [Wh]'] = get_monthly_value_from_annual_vector(lights_consumption,
+        method='sum')
+        results['Other devices electric consumption [Wh]'] = get_monthly_value_from_annual_vector(other_devices_consumption,
         method='sum')
 
         DHW_Demand = np.array([tz.domestic_hot_water_demand for tz in self._thermal_zones_list]).T.sum(axis = 1) / CONFIG.ts_per_hour
